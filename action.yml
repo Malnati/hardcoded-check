@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v2.0.0
+# Malnati/code-literal-sentinel@v2.0.1
 name: "Code Literal Sentinel"
 description: "Varredura agressiva de literais. Gera um relatório e abre uma PR dedicada para análise."
 author: "Ricardo Malnati"
@@ -41,7 +41,7 @@ runs:
         EXTS: ${{ inputs.file_extensions }}
         DIR: ${{ inputs.report_dir }}
       run: |
-        echo "::group::🔍 Step 0: Sentinel Configuration (v2.0)"
+        echo "::group::🔍 Step 0: Sentinel Configuration"
         echo "---------------------------------------------------------------"
         echo "👁️  Code Literal Sentinel (Report PR Mode)"
         echo "---------------------------------------------------------------"
@@ -58,11 +58,8 @@ runs:
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
-        REPO: ${{ github.repository }}
       run: |
-        echo "::group::🔐 Step 0.5: Permission Check (Write Access)"
-        # Testa acesso de escrita na API (Dry Run de criação de branch simulado ou check de escopo)
-        # Simplificado: Verifica se o token existe. O git push falhará se não tiver permissão.
+        echo "::group::🔐 Step 0.5: Permission Check"
         if [ -z "$TOKEN" ]; then
            echo "❌ Token não fornecido."
            exit 1
@@ -77,7 +74,6 @@ runs:
     - id: scan
       shell: bash
       env:
-        TOKEN: ${{ inputs.token }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         EXTS: ${{ inputs.file_extensions }}
@@ -87,12 +83,8 @@ runs:
         set -euo pipefail
         
         echo "🔎 Iniciando varredura..."
-        
-        # Define nome do arquivo com timestamp
         TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
         FULL_PATH="./$REPORT_DIR/$TIMESTAMP.md"
-        
-        # Garante diretório
         mkdir -p "$REPORT_DIR"
 
         # 1. Listar arquivos
@@ -109,7 +101,7 @@ runs:
         # 2. Grep Agressivo
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
-        # Gerar conteúdo Markdown para o arquivo
+        # Gerar conteúdo Markdown
         echo "# Relatório de Literais Hardcoded" > "$FULL_PATH"
         echo "**Data:** $TIMESTAMP" >> "$FULL_PATH"
         echo "**Origem:** SHA $HEAD_SHA" >> "$FULL_PATH"
@@ -119,8 +111,7 @@ runs:
         echo "$FILES" | xargs -r grep -HnE "$PATTERN" >> "$FULL_PATH" || true
         echo "\`\`\`" >> "$FULL_PATH"
 
-        # Verifica se achou algo (grep exit code ou tamanho do arquivo)
-        # Contamos linhas dentro do bloco de texto (ignorando o cabeçalho markdown)
+        # Verifica contagem
         COUNT=$(grep -cE "$PATTERN" "$FULL_PATH" || true)
         
         if [ "$COUNT" -gt "0" ]; then
@@ -130,11 +121,11 @@ runs:
         else
            echo "CLEAN" > /tmp/scan_status
            echo "0" > /tmp/scan_count
-           rm "$FULL_PATH" # Limpa se vazio
+           rm "$FULL_PATH"
         fi
 
     # ------------------------------------------------------------------
-    # STEP 2: CRIAR BRANCH E PR DE RELATÓRIO
+    # STEP 2: CRIAR BRANCH E PR DE RELATÓRIO (SIMPLIFICADO)
     # ------------------------------------------------------------------
     - id: create_pr
       shell: bash
@@ -152,37 +143,38 @@ runs:
         if [ "$STATUS" == "FOUND" ]; then
            echo "🚀 Preparando Pull Request de Relatório..."
            
-           # Config Git
            git config user.name "sentinel-bot"
            git config user.email "sentinel-bot@users.noreply.github.com"
            
-           # Nome da Branch de Relatório
-           TIMESTAMP=$(date +"%s")
-           REPORT_BRANCH="sentinel/report-pr-${PR_NUM}-${TIMESTAMP}"
+           # Nova Nomenclatura Padronizada: <origem>/audit/code-literal-sentinel
+           # Removemos timestamp da branch para permitir atualização da mesma PR de report se rodar 2x
+           REPORT_BRANCH="${HEAD_REF}/audit/code-literal-sentinel"
            
-           # Checkout da Branch de Origem (Para derivar dela) e criar a nova
+           # Checkout e criação da branch
            git checkout "$HEAD_REF"
-           git checkout -b "$REPORT_BRANCH"
+           # -B força a criação ou reset da branch se ela já existir
+           git checkout -B "$REPORT_BRANCH"
            
-           # Adicionar e Commitar o Relatório
            git add "$REPORT_PATH"
            git commit -m "docs(sentinel): add literal scan report [skip ci]"
            
-           # Push
-           git push origin "$REPORT_BRANCH"
+           # Push forçado para atualizar a branch de relatório se já existir
+           git push -f origin "$REPORT_BRANCH"
            
-           # Criar PR usando GH CLI
-           # Base: Branch original da PR (HEAD_REF)
-           # Head: Nova branch de relatório (REPORT_BRANCH)
-           echo "📡 Criando PR..."
-           PR_URL=$(gh pr create \
+           echo "📡 Criando/Atualizando PR..."
+           
+           # Tenta criar a PR. Se já existir, o comando falha graciosamente, mas recuperamos a URL
+           # || true garante que o script não quebre se a PR já existir
+           gh pr create \
              --base "$HEAD_REF" \
              --head "$REPORT_BRANCH" \
-             --title "🔍 Sentinel Report: PR #$PR_NUM" \
-             --body "Este é um relatório automático gerado pelo Code Literal Sentinel. Utilize este arquivo para análise assistida por IA." \
-             --label "sentinel-report")
+             --title "🛡️ Sentinel Audit: PR #$PR_NUM" \
+             --body "Relatório automático de literais hardcoded. Branch de origem: \`$HEAD_REF\`." || true
              
-           echo "✅ PR Criada: $PR_URL"
+           # Recupera a URL da PR (seja nova ou existente)
+           PR_URL=$(gh pr view "$REPORT_BRANCH" --json url -q .url)
+           
+           echo "✅ PR Disponível: $PR_URL"
         fi
         
         echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
@@ -202,8 +194,7 @@ runs:
         
         if [ "$STATUS" == "FOUND" ]; then
            MSG="Literais detectados ($COUNT)."
-           # Mensagem Rica com Link
-           GUIDE="Um relatório detalhado foi gerado. **[Clique aqui para acessar a PR de Análise]($PR_URL)**."
+           GUIDE="Relatório disponível em: **[Ver PR de Auditoria]($PR_URL)**."
            COLOR="#dbab09"
         elif [ "$STATUS" == "CLEAN" ]; then
            MSG="Código limpo."
@@ -215,7 +206,6 @@ runs:
            COLOR="#8b949e"
         fi
 
-        # Gera JSON
         jq -n \
           --arg status "$STATUS" \
           --arg count "$COUNT" \
