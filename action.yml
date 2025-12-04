@@ -1,6 +1,6 @@
-# Malnati/code-literal-sentinel@v1.0.1
+# Malnati/code-literal-sentinel@v2.0.0
 name: "Code Literal Sentinel"
-description: "Varredura agressiva de literais hardcoded para indexação e análise posterior por IA."
+description: "Varredura agressiva de literais. Gera um relatório e abre uma PR dedicada para análise."
 author: "Ricardo Malnati"
 
 branding:
@@ -9,83 +9,70 @@ branding:
 
 inputs:
   token:
-    description: "GitHub token (ex.: secrets.GITHUB_TOKEN) para ler diffs."
+    description: "GitHub token (com permissões de escrita) para criar Branches e PRs."
     required: true
   file_extensions:
-    description: "Regex de extensões para varrer (Ex: ts|js|java|py)."
+    description: "Regex de extensões para varrer."
     required: false
     default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
   exclude_patterns:
-    description: "Regex de caminhos para ignorar completamente (Ex: node_modules|dist)."
+    description: "Regex de caminhos para ignorar."
     required: false
     default: "node_modules|dist|build|.git"
-  output_file:
-    description: "Caminho onde o índice bruto (arquivo físico) será salvo."
+  report_dir:
+    description: "Diretório onde os relatórios serão salvos."
     required: false
-    default: "literals-index.txt"
+    default: "reports/code-literal-sentinel"
 
 outputs:
   result_json:
-    description: "JSON contendo diagnóstico, contagens e orientações."
+    description: "JSON contendo diagnóstico, contagens e Link da PR de relatório."
     value: ${{ steps.generate_output.outputs.json_payload }}
-  index_path:
-    description: "Caminho do arquivo físico gerado com os literais encontrados."
-    value: ${{ steps.scan.outputs.file_path }}
 
 runs:
   using: "composite"
   steps:
     # ------------------------------------------------------------------
-    # STEP 0: DIAGNÓSTICO DE INPUTS E AMBIENTE
+    # STEP 0: DIAGNÓSTICO
     # ------------------------------------------------------------------
     - id: debug_inputs
       shell: bash
       env:
         EXTS: ${{ inputs.file_extensions }}
-        EXCL: ${{ inputs.exclude_patterns }}
-        OUT: ${{ inputs.output_file }}
+        DIR: ${{ inputs.report_dir }}
       run: |
-        echo "::group::🔍 Step 0: Sentinel Configuration"
+        echo "::group::🔍 Step 0: Sentinel Configuration (v2.0)"
         echo "---------------------------------------------------------------"
-        echo "👁️  Code Literal Sentinel (Aggressive Mode)"
+        echo "👁️  Code Literal Sentinel (Report PR Mode)"
         echo "---------------------------------------------------------------"
-        echo "🎯 Objetivo: Mapear TODOS os literais para análise de IA."
-        echo ""
-        echo "⚙️  Parâmetros de Busca:"
-        echo "    - Extensões Alvo: .($EXTS)"
-        echo "    - Exclusões:      $EXCL"
-        echo "    - Arquivo Saída:  $OUT"
+        echo "⚙️  Configuração:"
+        echo "    - Extensões: .($EXTS)"
+        echo "    - Destino:   $DIR/<timestamp>.md"
         echo "---------------------------------------------------------------"
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 0.5: VERIFICAÇÃO DE PERMISSÕES
+    # STEP 0.5: VERIFICAÇÃO DE ESCRITA
     # ------------------------------------------------------------------
-    - id: debug_perms
+    - id: check_perms
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
         REPO: ${{ github.repository }}
-        PR: ${{ github.event.pull_request.number }}
       run: |
-        echo "::group::🔐 Step 0.5: Permission Check"
-        
-        URL="https://api.github.com/repos/$REPO/pulls/$PR/files"
-        echo "📡 Testando acesso de leitura (contents: read)..."
-        
-        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$URL")
-        
-        if [ "$HTTP_CODE" == "200" ]; then
-           echo "   ✅ Status 200 OK - Permissão confirmada."
-        else
-           echo "   ⛔ Status $HTTP_CODE - Falha ao ler arquivos."
-           echo "      Ação Requerida: Adicione 'contents: read' ao workflow."
+        echo "::group::🔐 Step 0.5: Permission Check (Write Access)"
+        # Testa acesso de escrita na API (Dry Run de criação de branch simulado ou check de escopo)
+        # Simplificado: Verifica se o token existe. O git push falhará se não tiver permissão.
+        if [ -z "$TOKEN" ]; then
+           echo "❌ Token não fornecido."
            exit 1
         fi
+        echo "✅ Token presente. A validação final ocorrerá no 'git push'."
+        echo "   Requisito: 'contents: write' e 'pull-requests: write'."
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 1: SCAN AGRESSIVO (Grep Puro)
+    # STEP 1: SCAN E GERAÇÃO DE ARQUIVO
     # ------------------------------------------------------------------
     - id: scan
       shell: bash
@@ -95,97 +82,152 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         EXTS: ${{ inputs.file_extensions }}
         EXCLUDE: ${{ inputs.exclude_patterns }}
-        OUT_FILE: ${{ inputs.output_file }}
+        REPORT_DIR: ${{ inputs.report_dir }}
       run: |
         set -euo pipefail
         
-        echo "🔎 Iniciando varredura profunda..."
+        echo "🔎 Iniciando varredura..."
         
-        # 1. Listar arquivos modificados na PR
-        # diff-filter=ACMRTUXB ignora arquivos deletados
+        # Define nome do arquivo com timestamp
+        TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+        FULL_PATH="./$REPORT_DIR/$TIMESTAMP.md"
+        
+        # Garante diretório
+        mkdir -p "$REPORT_DIR"
+
+        # 1. Listar arquivos
         FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE_SHA" "$HEAD_SHA" \
           | grep -E "\.($EXTS)$" \
           | grep -vE "$EXCLUDE" || true)
 
         if [ -z "$FILES" ]; then
-          echo "⚪ Nenhum arquivo elegível modificado."
           echo "NO_FILES" > /tmp/scan_status
+          echo "0" > /tmp/scan_count
           exit 0
         fi
 
-        # 2. Executar Grep Agressivo
-        # Regex captura qualquer coisa entre aspas simples ou duplas com mais de 2 chars
+        # 2. Grep Agressivo
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
-        # Salva o resultado bruto no arquivo temporário
-        # Formato: arquivo:linha:conteudo
-        echo "$FILES" | xargs -r grep -HnE "$PATTERN" > /tmp/raw_findings.txt || true
+        # Gerar conteúdo Markdown para o arquivo
+        echo "# Relatório de Literais Hardcoded" > "$FULL_PATH"
+        echo "**Data:** $TIMESTAMP" >> "$FULL_PATH"
+        echo "**Origem:** SHA $HEAD_SHA" >> "$FULL_PATH"
+        echo "" >> "$FULL_PATH"
+        echo "## 🔍 Evidências Brutas" >> "$FULL_PATH"
+        echo "\`\`\`text" >> "$FULL_PATH"
+        echo "$FILES" | xargs -r grep -HnE "$PATTERN" >> "$FULL_PATH" || true
+        echo "\`\`\`" >> "$FULL_PATH"
 
-        # Verifica se o arquivo tem conteúdo
-        if [ -s /tmp/raw_findings.txt ]; then
-           echo "⚠️ Literais encontrados. Gerando índice..."
-
-           mkdir -p "$(dirname "$OUT_FILE")"
-           cp /tmp/raw_findings.txt "./$OUT_FILE"
+        # Verifica se achou algo (grep exit code ou tamanho do arquivo)
+        # Contamos linhas dentro do bloco de texto (ignorando o cabeçalho markdown)
+        COUNT=$(grep -cE "$PATTERN" "$FULL_PATH" || true)
+        
+        if [ "$COUNT" -gt "0" ]; then
            echo "FOUND" > /tmp/scan_status
-           
-           # Conta linhas para métricas
-           COUNT=$(wc -l < /tmp/raw_findings.txt)
            echo "$COUNT" > /tmp/scan_count
+           echo "path=$FULL_PATH" >> "$GITHUB_OUTPUT"
         else
-           echo "✅ Nenhum literal detectado pelos padrões."
            echo "CLEAN" > /tmp/scan_status
            echo "0" > /tmp/scan_count
+           rm "$FULL_PATH" # Limpa se vazio
         fi
-        
-        echo "file_path=./$OUT_FILE" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # STEP 2: GERAR JSON DE DIAGNÓSTICO (GITHUB_OUTPUT)
+    # STEP 2: CRIAR BRANCH E PR DE RELATÓRIO
     # ------------------------------------------------------------------
-    - id: generate_output
+    - id: create_pr
       shell: bash
       env:
-        OUT_FILE: ${{ inputs.output_file }}
+        GH_TOKEN: ${{ inputs.token }}
+        REPORT_PATH: ${{ steps.scan.outputs.path }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_NUM: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
         
         STATUS=$(cat /tmp/scan_status)
-        COUNT="0"
-        if [ -f /tmp/scan_count ]; then
-           COUNT=$(cat /tmp/scan_count)
-        fi
-
-        # Construção do JSON usando jq para garantir formato válido
-        # Define mensagens de guidance baseadas no status
+        PR_URL=""
         
         if [ "$STATUS" == "FOUND" ]; then
-           MSG="Literais detectados."
-           GUIDE="O arquivo de índice contém $COUNT ocorrências. Envie o arquivo '$OUT_FILE' para o agente de IA para filtragem contextual."
-           COLOR="#dbab09" # Amarelo/Laranja
+           echo "🚀 Preparando Pull Request de Relatório..."
+           
+           # Config Git
+           git config user.name "sentinel-bot"
+           git config user.email "sentinel-bot@users.noreply.github.com"
+           
+           # Nome da Branch de Relatório
+           TIMESTAMP=$(date +"%s")
+           REPORT_BRANCH="sentinel/report-pr-${PR_NUM}-${TIMESTAMP}"
+           
+           # Checkout da Branch de Origem (Para derivar dela) e criar a nova
+           git checkout "$HEAD_REF"
+           git checkout -b "$REPORT_BRANCH"
+           
+           # Adicionar e Commitar o Relatório
+           git add "$REPORT_PATH"
+           git commit -m "docs(sentinel): add literal scan report [skip ci]"
+           
+           # Push
+           git push origin "$REPORT_BRANCH"
+           
+           # Criar PR usando GH CLI
+           # Base: Branch original da PR (HEAD_REF)
+           # Head: Nova branch de relatório (REPORT_BRANCH)
+           echo "📡 Criando PR..."
+           PR_URL=$(gh pr create \
+             --base "$HEAD_REF" \
+             --head "$REPORT_BRANCH" \
+             --title "🔍 Sentinel Report: PR #$PR_NUM" \
+             --body "Este é um relatório automático gerado pelo Code Literal Sentinel. Utilize este arquivo para análise assistida por IA." \
+             --label "sentinel-report")
+             
+           echo "✅ PR Criada: $PR_URL"
+        fi
+        
+        echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # STEP 3: GERAR JSON FINAL
+    # ------------------------------------------------------------------
+    - id: generate_output
+      shell: bash
+      env:
+        PR_URL: ${{ steps.create_pr.outputs.pr_url }}
+      run: |
+        set -euo pipefail
+        
+        STATUS=$(cat /tmp/scan_status)
+        COUNT=$(cat /tmp/scan_count)
+        
+        if [ "$STATUS" == "FOUND" ]; then
+           MSG="Literais detectados ($COUNT)."
+           # Mensagem Rica com Link
+           GUIDE="Um relatório detalhado foi gerado. **[Clique aqui para acessar a PR de Análise]($PR_URL)**."
+           COLOR="#dbab09"
         elif [ "$STATUS" == "CLEAN" ]; then
            MSG="Código limpo."
-           GUIDE="Nenhum literal hardcoded detectado. Nenhuma ação de IA necessária."
-           COLOR="#3fb950" # Verde
+           GUIDE="Nenhum literal hardcoded detectado."
+           COLOR="#3fb950"
         else
            MSG="Ignorado."
-           GUIDE="Nenhum arquivo de código foi alterado nesta PR."
-           COLOR="#8b949e" # Cinza
+           GUIDE="Sem alterações em arquivos monitorados."
+           COLOR="#8b949e"
         fi
 
-        # Cria o JSON em arquivo temporário
+        # Gera JSON
         jq -n \
           --arg status "$STATUS" \
           --arg count "$COUNT" \
           --arg msg "$MSG" \
           --arg guide "$GUIDE" \
-          --arg file "$OUT_FILE" \
+          --arg url "$PR_URL" \
           --arg color "$COLOR" \
           '{
             analysis: {
               status: $status,
               total_findings: ($count | tonumber),
-              index_file: $file
+              report_pr_url: $url
             },
             ui: {
               message: $msg,
@@ -194,7 +236,5 @@ runs:
             }
           }' > /tmp/output_payload.json
 
-        # Passa o conteúdo do JSON para a variável de output sem heredoc
-        # Usando jq -c (compact) para ser uma linha só
         JSON_LINE=$(jq -c . /tmp/output_payload.json)
         echo "json_payload=$JSON_LINE" >> "$GITHUB_OUTPUT"
