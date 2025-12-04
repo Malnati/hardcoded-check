@@ -1,143 +1,198 @@
 # action.yml
-name: "🔐 hardcoded-check"
+name: "Code Literal Sentinel"
+description: "Varredura agressiva de literais hardcoded para indexação e análise posterior por IA."
+author: "Ricardo Malnati"
 
-on:
-  workflow_call:
-    secrets:
-      token:
-        required: true
+branding:
+  icon: "eye"
+  color: "orange"
 
-permissions:
-  contents: write
-  pull-requests: write
+inputs:
+  token:
+    description: "GitHub token (ex.: secrets.GITHUB_TOKEN) para ler diffs."
+    required: true
+  file_extensions:
+    description: "Regex de extensões para varrer (Ex: ts|js|java|py)."
+    required: false
+    default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
+  exclude_patterns:
+    description: "Regex de caminhos para ignorar completamente (Ex: node_modules|dist)."
+    required: false
+    default: "node_modules|dist|build|.git"
+  output_file:
+    description: "Caminho onde o índice bruto (arquivo físico) será salvo."
+    required: false
+    default: "literals-index.txt"
 
-jobs:
-  hardcoded-index:
-    if: ${{ github.event_name == 'pull_request' &&
-            github.event.pull_request.changed_files > 0 &&
-            !startsWith(github.event.pull_request.head.ref, 'dev') &&
-            !startsWith(github.event.pull_request.head.ref, 'h') &&
-            !startsWith(github.event.pull_request.head.ref, 'pr') }}
-    runs-on: ubuntu-latest
+outputs:
+  result_json:
+    description: "JSON contendo diagnóstico, contagens e orientações."
+    value: ${{ steps.generate_output.outputs.json_payload }}
+  index_path:
+    description: "Caminho do arquivo físico gerado com os literais encontrados."
+    value: ${{ steps.scan.outputs.file_path }}
 
-    steps:
-      - name: Checkout PR head branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
+runs:
+  using: "composite"
+  steps:
+    # ------------------------------------------------------------------
+    # STEP 0: DIAGNÓSTICO DE INPUTS E AMBIENTE
+    # ------------------------------------------------------------------
+    - id: debug_inputs
+      shell: bash
+      env:
+        EXTS: ${{ inputs.file_extensions }}
+        EXCL: ${{ inputs.exclude_patterns }}
+        OUT: ${{ inputs.output_file }}
+      run: |
+        echo "::group::🔍 Step 0: Sentinel Configuration"
+        echo "---------------------------------------------------------------"
+        echo "👁️  Code Literal Sentinel (Aggressive Mode)"
+        echo "---------------------------------------------------------------"
+        echo "🎯 Objetivo: Mapear TODOS os literais para análise de IA."
+        echo ""
+        echo "⚙️  Parâmetros de Busca:"
+        echo "    - Extensões Alvo: .($EXTS)"
+        echo "    - Exclusões:      $EXCL"
+        echo "    - Arquivo Saída:  $OUT"
+        echo "---------------------------------------------------------------"
+        echo "::endgroup::"
 
-      - name: Generate hardcoded literals index
-        id: generate-hardcoded-index
-        run: |
-          BASE_BRANCH="${{ github.event.pull_request.base.ref }}"
-          HEAD_BRANCH="${{ github.event.pull_request.head.ref }}"
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
+    # ------------------------------------------------------------------
+    # STEP 0.5: VERIFICAÇÃO DE PERMISSÕES
+    # ------------------------------------------------------------------
+    - id: debug_perms
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        PR: ${{ github.event.pull_request.number }}
+      run: |
+        echo "::group::🔐 Step 0.5: Permission Check"
+        
+        URL="https://api.github.com/repos/$REPO/pulls/$PR/files"
+        echo "📡 Testando acesso de leitura (contents: read)..."
+        
+        HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" "$URL")
+        
+        if [ "$HTTP_CODE" == "200" ]; then
+           echo "   ✅ Status 200 OK - Permissão confirmada."
+        else
+           echo "   ⛔ Status $HTTP_CODE - Falha ao ler arquivos."
+           echo "      Ação Requerida: Adicione 'contents: read' ao workflow."
+           exit 1
+        fi
+        echo "::endgroup::"
 
-          TS="$(date -u +%Y%m%d-%H%M%S)"
-          mkdir -p .github/reports/hardcoded
+    # ------------------------------------------------------------------
+    # STEP 1: SCAN AGRESSIVO (Grep Puro)
+    # ------------------------------------------------------------------
+    - id: scan
+      shell: bash
+      env:
+        TOKEN: ${{ inputs.token }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        EXTS: ${{ inputs.file_extensions }}
+        EXCLUDE: ${{ inputs.exclude_patterns }}
+        OUT_FILE: ${{ inputs.output_file }}
+      run: |
+        set -euo pipefail
+        
+        echo "🔎 Iniciando varredura profunda..."
+        
+        # 1. Listar arquivos modificados na PR
+        # diff-filter=ACMRTUXB ignora arquivos deletados
+        FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE_SHA" "$HEAD_SHA" \
+          | grep -E "\.($EXTS)$" \
+          | grep -vE "$EXCLUDE" || true)
 
-          FILES="$(git diff --name-only --diff-filter=ACMRTUXB "$BASE_SHA" "$HEAD_SHA" \
-            | grep -E '\.(ts|js|jsx|tsx|java|py|sh|bash)$' || true)"
-
-          INDEX_FILE=".github/reports/hardcoded/PR${PR_NUMBER}-index.md"
-          PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
-          HAS_REPORT="false"
-
-          if [ -z "$FILES" ]; then
-            echo "✅ Nenhum arquivo com extensão monitorada modificado na PR. Nada para indexar."
-          else
-            RESULTS="$(echo "$FILES" | xargs -r grep -HnE "$PATTERN" || true)"
-
-            if [ -z "$RESULTS" ]; then
-              echo "✅ Nenhum literal hardcoded encontrado nos arquivos modificados."
-            else
-              {
-                echo "# Índice de literais hardcoded"
-                echo
-                echo "- Pull Request: #${PR_NUMBER}"
-                echo "- Branch base: \`$BASE_BRANCH\`"
-                echo "- Branch origem: \`$HEAD_BRANCH\`"
-                echo "- SHA base: \`$BASE_SHA\`"
-                echo "- SHA head: \`$HEAD_SHA\`"
-                echo "- Data (UTC): \`$TS\`"
-                echo
-                echo "## Índice por arquivo"
-                echo
-                echo "$RESULTS" | awk -F: '
-                  {
-                    file=$1; line=$2;
-                    sub($1 ":" $2 ":", "", $0);
-                    gsub(/`/, "\\`", $0);
-                    if (file != last_file) {
-                      if (last_file != "") print "";
-                      print "### `" file "`";
-                      last_file=file;
-                    }
-                    print "- Linha " line " - " $0;
-                  }
-                '
-              } > "$INDEX_FILE"
-
-              echo "✅ Índice de literais hardcoded gerado com sucesso."
-              echo "📄 Relatório gerado em: $INDEX_FILE"
-
-              git config user.name "github-actions[bot]"
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git add "$INDEX_FILE"
-              git commit -m "hardcoded: índice PR${PR_NUMBER} ${TS}" || true
-
-              HAS_REPORT="true"
-            fi
-          fi
-
-          {
-            echo "has_report=$HAS_REPORT"
-            echo "report_path=$INDEX_FILE"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Comment hardcoded report in PR
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HAS_REPORT: ${{ steps.generate-hardcoded-index.outputs.has_report }}
-          REPORT_PATH: ${{ steps.generate-hardcoded-index.outputs.report_path }}
-        run: |
-          if [ "${HAS_REPORT}" != "true" ]; then
-            MSG="✅ Nenhum literal hardcoded encontrado nos arquivos modificados.\n\n"
-            JSON_BODY="$(printf '%b' "$MSG" | python -c 'import json,sys; print(json.dumps({'"'"'body'"'"': sys.stdin.read()}))')"
-
-            curl -sS \
-              -H "Authorization: Bearer $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -X POST "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              -d "$JSON_BODY" || true
-
-            exit 0
-          fi
-
-          if [ -z "$REPORT_PATH" ] || [ ! -f "$REPORT_PATH" ]; then
-            echo "ℹ️ Relatório não encontrado em $REPORT_PATH; nenhum comentário será criado."
-            exit 0
-          fi
-
-          SUMMARY="$(head -n 40 "$REPORT_PATH" || true)"
-
-          MSG="✅ Índice de literais hardcoded gerado com sucesso.\n\n"
-          MSG+="📄 Caminho do relatório: \`$REPORT_PATH\`\n\n"
-          MSG+="📝 Prévia do conteúdo:\n"
-          MSG+="\`\`\`markdown\n$SUMMARY\n\`\`\`\n"
-
-          JSON_BODY="$(printf '%b' "$MSG" | python -c 'import json,sys; print(json.dumps({'"'"'body'"'"': sys.stdin.read()}))')"
-
-          curl -sS \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -X POST "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-            -d "$JSON_BODY" || true
-
+        if [ -z "$FILES" ]; then
+          echo "⚪ Nenhum arquivo elegível modificado."
+          echo "NO_FILES" > /tmp/scan_status
           exit 0
+        fi
+
+        # 2. Executar Grep Agressivo
+        # Regex captura qualquer coisa entre aspas simples ou duplas com mais de 2 chars
+        PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
+        
+        # Salva o resultado bruto no arquivo temporário
+        # Formato: arquivo:linha:conteudo
+        echo "$FILES" | xargs -r grep -HnE "$PATTERN" > /tmp/raw_findings.txt || true
+
+        # Verifica se o arquivo tem conteúdo
+        if [ -s /tmp/raw_findings.txt ]; then
+           echo "⚠️ Literais encontrados. Gerando índice..."
+           cp /tmp/raw_findings.txt "./$OUT_FILE"
+           echo "FOUND" > /tmp/scan_status
+           
+           # Conta linhas para métricas
+           COUNT=$(wc -l < /tmp/raw_findings.txt)
+           echo "$COUNT" > /tmp/scan_count
+        else
+           echo "✅ Nenhum literal detectado pelos padrões."
+           echo "CLEAN" > /tmp/scan_status
+           echo "0" > /tmp/scan_count
+        fi
+        
+        echo "file_path=./$OUT_FILE" >> "$GITHUB_OUTPUT"
+
+    # ------------------------------------------------------------------
+    # STEP 2: GERAR JSON DE DIAGNÓSTICO (GITHUB_OUTPUT)
+    # ------------------------------------------------------------------
+    - id: generate_output
+      shell: bash
+      env:
+        OUT_FILE: ${{ inputs.output_file }}
+      run: |
+        set -euo pipefail
+        
+        STATUS=$(cat /tmp/scan_status)
+        COUNT="0"
+        if [ -f /tmp/scan_count ]; then
+           COUNT=$(cat /tmp/scan_count)
+        fi
+
+        # Construção do JSON usando jq para garantir formato válido
+        # Define mensagens de guidance baseadas no status
+        
+        if [ "$STATUS" == "FOUND" ]; then
+           MSG="Literais detectados."
+           GUIDE="O arquivo de índice contém $COUNT ocorrências. Envie o arquivo '$OUT_FILE' para o agente de IA para filtragem contextual."
+           COLOR="#dbab09" # Amarelo/Laranja
+        elif [ "$STATUS" == "CLEAN" ]; then
+           MSG="Código limpo."
+           GUIDE="Nenhum literal hardcoded detectado. Nenhuma ação de IA necessária."
+           COLOR="#3fb950" # Verde
+        else
+           MSG="Ignorado."
+           GUIDE="Nenhum arquivo de código foi alterado nesta PR."
+           COLOR="#8b949e" # Cinza
+        fi
+
+        # Cria o JSON em arquivo temporário
+        jq -n \
+          --arg status "$STATUS" \
+          --arg count "$COUNT" \
+          --arg msg "$MSG" \
+          --arg guide "$GUIDE" \
+          --arg file "$OUT_FILE" \
+          --arg color "$COLOR" \
+          '{
+            analysis: {
+              status: $status,
+              total_findings: ($count | tonumber),
+              index_file: $file
+            },
+            ui: {
+              message: $msg,
+              guidance: $guide,
+              color: $color
+            }
+          }' > /tmp/output_payload.json
+
+        # Passa o conteúdo do JSON para a variável de output sem heredoc
+        # Usando jq -c (compact) para ser uma linha só
+        JSON_LINE=$(jq -c . /tmp/output_payload.json)
+        echo "json_payload=$JSON_LINE" >> "$GITHUB_OUTPUT"
