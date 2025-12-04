@@ -1,77 +1,36 @@
 <!-- README.md -->
 # 👁️ Code Literal Sentinel
 
-[![GitHub Release](https://img.shields.io/github/v/release/Malnati/code-literal-sentinel?style=for-the-badge&color=orange)](https://github.com/Malnati/code-literal-sentinel/releases)
+**Scanner agressivo de literais. Gera um relatório em branch dedicada para análise de IA.**
 
-**Varredura agressiva de literais hardcoded para indexação e análise assistida por IA.**
+Esta Action varre o código modificado em uma PR, identifica strings hardcoded, cria uma nova branch com um relatório Markdown e abre uma **Pull Request dedicada** apontando para a branch de origem. Isso permite que desenvolvedores e agentes de IA revisem as descobertas de forma isolada e estruturada.
 
-O **Code Literal Sentinel** não é um linter tradicional. Ele atua como um "cão farejador" (hunter) que varre agressivamente o diff de Pull Requests em busca de qualquer string, número mágico ou possível segredo hardcoded.
+## 🚀 Como Funciona
 
-> 🧠 **Filosofia:** Esta Action prioriza **Recall** sobre **Precision**. Ela propositalmente gera muitos falsos positivos ("agressiva") para garantir que nada escape. O arquivo de índice gerado deve ser consumido por uma ferramenta de Inteligência Artificial subsequente, que terá o discernimento (contexto) para filtrar o que é aceitável do que é débito técnico.
-
----
-
-## 🚀 Funcionalidades
-
-* **🔎 Busca Agressiva:** Utiliza padrões `grep` abrangentes para capturar strings e números.
-* **📄 Geração de Índice:** Produz um arquivo físico (`txt`) contendo `Arquivo:Linha:Conteúdo` de todas as ocorrências.
-* **🤖 AI-Ready:** O output é formatado para ser facilmente ingerido por prompts de LLMs (Large Language Models) para revisão de código.
-* **📡 Diagnóstico JSON:** Retorna um payload JSON rico via `$GITHUB_OUTPUT` para orquestração de workflows.
-
----
+1.  **Scan:** Busca agressiva (grep) por strings e números mágicos.
+2.  **Branching:** Cria uma branch `sentinel/report-...` a partir da sua branch de feature.
+3.  **Relatório:** Commita o arquivo `reports/code-literal-sentinel/YYYYMMDD.md`.
+4.  **Feedback:** Abre uma PR "Sentinel Report" -> "Sua Feature Branch" e retorna o link.
 
 ## 📦 Inputs
 
 | Input | Descrição | Padrão |
 | :--- | :--- | :--- |
-| `token` | **Obrigatório**. Token para acessar o diff da PR. | - |
-| `file_extensions` | Regex das extensões de arquivo a serem analisadas. | `ts\|js\|java\|py\|go...` |
-| `exclude_patterns` | Regex de pastas/arquivos a ignorar. | `node_modules\|dist\|.git` |
-| `output_file` | Nome do arquivo de índice gerado. | `literals-index.txt` |
+| `token` | **Obrigatório**. Token com permissões `contents: write` e `pull-requests: write`. | - |
+| `report_dir` | Diretório onde o relatório será salvo. | `reports/code-literal-sentinel` |
+| `file_extensions` | Extensões alvo. | `ts\|js...` |
+| `exclude_patterns` | Padrões ignorados. | `node_modules...` |
 
----
-
-## 📤 Outputs
-
-### 1. `result_json` (Variável de Ambiente)
-Um objeto JSON contendo o diagnóstico da execução. Ideal para decidir se deve-se acionar o agente de IA.
-
-```json
-{
-  "analysis": {
-    "status": "FOUND",
-    "total_findings": 42,
-    "index_file": "literals-index.txt"
-  },
-  "ui": {
-    "message": "Literais detectados.",
-    "guidance": "O arquivo de índice contém 42 ocorrências. Envie para o agente de IA.",
-    "color": "#dbab09"
-  }
-}
-````
-
-### 2\. `index_path` (Arquivo Físico)
-
-O caminho para o arquivo de texto bruto gerado no workspace. Exemplo de conteúdo:
-
-```text
-src/auth/config.ts:15: const SECRET = "my-super-secret-key"
-src/utils/calc.py:10: return value * 3.14159
-src/views/home.tsx:45: <Button title="Click Me" />
-```
-
------
-
-## 🛠️ Exemplo de Workflow (Sentinel + AI Analysis)
+## 🛠️ Exemplo de Uso
 
 ```yaml
-name: "AI Code Review"
+name: "Sentinel Scan"
 
 on: [pull_request]
 
 permissions:
-  contents: read
+  contents: write       # Necessário para criar branch/commit
+  pull-requests: write  # Necessário para criar PR e comentar
 
 jobs:
   analyze:
@@ -79,35 +38,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Necessário para o git diff
+          fetch-depth: 0
 
-      # 1. O Sentinela coleta as evidências
-      - name: Code Literal Sentinel
+      # 1. Roda o Sentinel (Gera a PR de relatório)
+      - name: Run Sentinel
         id: sentinel
-        uses: Malnati/code-literal-sentinel@v1
+        uses: Malnati/code-literal-sentinel@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          output_file: "audit/literals.txt"
 
-      # 2. Upload do Artefato (Para auditoria ou uso posterior)
-      - name: Upload Index
-        if: ${{ fromJson(steps.sentinel.outputs.result_json).analysis.status == 'FOUND' }}
-        uses: actions/upload-artifact@v4
+      # 2. Comenta na PR original com o Link
+      - name: Notify
+        uses: Malnati/pr-comment@v6
         with:
-          name: raw-literals-index
-          path: audit/literals.txt
-
-      # 3. (Conceitual) Passo que enviaria o arquivo para uma IA
-      - name: AI Processing
-        if: ${{ fromJson(steps.sentinel.outputs.result_json).analysis.status == 'FOUND' }}
-        run: |
-          echo "Enviando ${{ steps.sentinel.outputs.index_path }} para análise de IA..."
-          # ex: python script_ai.py --input audit/literals.txt
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pr_number: ${{ github.event.pull_request.number }}
+          message_id: "sentinel-report"
+          header_title: "👁️ Code Literal Sentinel"
+          header_subject: "Relatório Gerado"
+          header_actor: "github-actions[bot]"
+          
+          body_message: |
+            ### ${{ fromJson(steps.sentinel.outputs.result_json).ui.message }}
+            
+            ${{ fromJson(steps.sentinel.outputs.result_json).ui.guidance }}
+          
+          footer_result: ${{ fromJson(steps.sentinel.outputs.result_json).analysis.status == 'FOUND' && '⚠️ Revisão' || '✅ Limpo' }}
+          footer_advise: "Verifique a PR de relatório gerada."
 ```
 
------
+---
+
+### O que acontece no final?
+
+1.  O desenvolvedor abre uma PR `feature/x` -> `develop`.
+2.  A Action roda e encontra literais.
+3.  Ela cria uma branch `sentinel/report-...` e commita o arquivo MD lá.
+4.  Ela abre uma PR `sentinel/report-...` -> `feature/x`.
+5.  Ela comenta na PR `feature/x`: **"Literais detectados. Um relatório detalhado foi gerado. [Clique aqui para acessar a PR de Análise]"**.
+
+Isso cria um fluxo de trabalho perfeito para uma ferramenta de IA subsequente pegar essa nova PR, ler o arquivo Markdown e comentar sugestões de refatoração diretamente nele!
 
 <div align="center">
-<sub>Developed by <a href="https://github.com/Malnati">Ricardo Malnati</a></sub>
+<sub>Developed by <a href="https://github.com/Malnati">Ricardo Malnati</a> 🤍 </sub>
 </div>
 
