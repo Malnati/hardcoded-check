@@ -125,7 +125,7 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # STEP 2: CRIAR BRANCH E PR DE RELATÓRIO (SIMPLIFICADO)
+    # STEP 2: CRIAR BRANCH E PR DE RELATÓRIO
     # ------------------------------------------------------------------
     - id: create_pr
       shell: bash
@@ -146,32 +146,30 @@ runs:
            git config user.name "sentinel-bot"
            git config user.email "sentinel-bot@users.noreply.github.com"
            
-           # Nova Nomenclatura Padronizada: <origem>/audit/code-literal-sentinel
-           # Removemos timestamp da branch para permitir atualização da mesma PR de report se rodar 2x
-           REPORT_BRANCH="${HEAD_REF}/audit/code-literal-sentinel"
+           # CORREÇÃO DE CONFLITO DE REF GIT:
+           # Em vez de 'origem/audit', usamos 'sentinel/audit/origem'
+           REPORT_BRANCH="sentinel/audit/${HEAD_REF}"
            
-           # Checkout e criação da branch
+           # Checkout da Branch de Origem
            git checkout "$HEAD_REF"
-           # -B força a criação ou reset da branch se ela já existir
+           
+           # Cria/Reseta a branch de relatório
            git checkout -B "$REPORT_BRANCH"
            
            git add "$REPORT_PATH"
            git commit -m "docs(sentinel): add literal scan report [skip ci]"
            
-           # Push forçado para atualizar a branch de relatório se já existir
+           # Push forçado
            git push -f origin "$REPORT_BRANCH"
            
            echo "📡 Criando/Atualizando PR..."
            
-           # Tenta criar a PR. Se já existir, o comando falha graciosamente, mas recuperamos a URL
-           # || true garante que o script não quebre se a PR já existir
            gh pr create \
              --base "$HEAD_REF" \
              --head "$REPORT_BRANCH" \
              --title "🛡️ Sentinel Audit: PR #$PR_NUM" \
-             --body "Relatório automático de literais hardcoded. Branch de origem: \`$HEAD_REF\`." || true
+             --body "Relatório automático de literais hardcoded para a branch \`$HEAD_REF\`." || true
              
-           # Recupera a URL da PR (seja nova ou existente)
            PR_URL=$(gh pr view "$REPORT_BRANCH" --json url -q .url)
            
            echo "✅ PR Disponível: $PR_URL"
