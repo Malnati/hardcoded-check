@@ -1,4 +1,4 @@
-# action.yml
+# Malnati/code-literal-sentinel@v1.0.1
 name: "Code Literal Sentinel"
 description: "Varredura agressiva de literais hardcoded para indexação e análise posterior por IA."
 author: "Ricardo Malnati"
@@ -124,6 +124,8 @@ runs:
         # Verifica se o arquivo tem conteúdo
         if [ -s /tmp/raw_findings.txt ]; then
            echo "⚠️ Literais encontrados. Gerando índice..."
+
+           mkdir -p "$(dirname "$OUT_FILE")"
            cp /tmp/raw_findings.txt "./$OUT_FILE"
            echo "FOUND" > /tmp/scan_status
            
