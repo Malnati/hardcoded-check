@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v2.1.0
+# Malnati/code-literal-sentinel@v2.1.1
 name: "Code Literal Sentinel"
 description: "Varredura agressiva de literais. Gera um relatório e abre uma PR dedicada para análise."
 author: "Ricardo Malnati"
@@ -9,24 +9,24 @@ branding:
 
 inputs:
   token:
-    description: "GitHub token (com permissões de escrita) para criar Branches e PRs."
+    description: "GitHub token."
     required: true
   file_extensions:
-    description: "Regex de extensões para varrer."
+    description: "Regex de extensões."
     required: false
     default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
   exclude_patterns:
-    description: "Regex de caminhos para ignorar."
+    description: "Regex de ignorados."
     required: false
-    default: "node_modules|dist|build|.git"
+    default: "node_modules|dist|build|.git|reports/code-literal-sentinel"
   report_dir:
-    description: "Diretório onde os relatórios serão salvos."
+    description: "Diretório dos relatórios."
     required: false
     default: "reports/code-literal-sentinel"
 
 outputs:
   result_json:
-    description: "JSON contendo diagnóstico, contagens e Link da PR de relatório."
+    description: "JSON de diagnóstico."
     value: ${{ steps.generate_output.outputs.json_payload }}
 
 runs:
@@ -41,59 +41,45 @@ runs:
         EXTS: ${{ inputs.file_extensions }}
         DIR: ${{ inputs.report_dir }}
       run: |
-        echo "::group::🔍 Step 0: Sentinel Configuration"
-        echo "---------------------------------------------------------------"
-        echo "👁️  Code Literal Sentinel (Report PR Mode)"
-        echo "---------------------------------------------------------------"
-        echo "⚙️  Configuração:"
-        echo "    - Extensões: .($EXTS)"
-        echo "    - Destino:   $DIR/<timestamp>.md"
-        echo "---------------------------------------------------------------"
+        echo "::group::🔍 Step 0: Sentinel Configuration (v2.1.1)"
+        echo "⚙️  Extensions: .($EXTS)"
+        echo "⚙️  Target Dir: $DIR"
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 0.5: VERIFICAÇÃO DE PERMISSÕES E CONFIGURAÇÃO
+    # STEP 0.1: CIRCUIT BREAKER (ROBUSTO)
+    # Usamos a expressão do GitHub para pular TUDO se for branch de auditoria
+    # ------------------------------------------------------------------
+    - id: circuit_breaker
+      shell: bash
+      # AQUI ESTÁ A CORREÇÃO: Usamos output para controlar os próximos passos
+      run: |
+        if [[ "${{ github.head_ref }}" == "sentinel/"* ]]; then
+           echo "🛑 Loop detectado. Branch de auditoria."
+           echo "skip=true" >> "$GITHUB_OUTPUT"
+        else
+           echo "skip=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ------------------------------------------------------------------
+    # STEP 0.5: PERMISSÕES
     # ------------------------------------------------------------------
     - id: check_perms
+      if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
       run: |
-        echo "::group::🔐 Step 0.5: Security & Permissions Check"
-        
-        # 1. Validação do Input Token
         if [ -z "$TOKEN" ]; then
-           echo "❌ Erro Crítico: Token não fornecido."
+           echo "❌ Token missing."
            exit 1
         fi
-        echo "✅ Input Token: Recebido."
-
-        # 2. Checklist de Permissões (Educativo)
-        echo ""
-        echo "📋 CHECKLIST DE REQUISITOS OBRIGATÓRIOS:"
-        echo "   Para que esta Action possa criar a Branch e a PR de relatório,"
-        echo "   o ambiente deve atender aos dois requisitos abaixo:"
-        echo ""
-        echo "   1️⃣  Permissões do Workflow (YAML):"
-        echo "       permissions:"
-        echo "         contents: write       # Para fazer git push"
-        echo "         pull-requests: write  # Para criar a PR"
-        echo ""
-        echo "   2️⃣  Configuração do Repositório (Settings):"
-        echo "       Você deve habilitar a criação de PRs por Actions."
-        echo "       👉 Vá em: Settings > Actions > General"
-        echo "       👉 Seção: Workflow permissions"
-        echo "       👉 Marque: [x] Allow GitHub Actions to create and approve pull requests"
-        echo ""
-        echo "   ⚠️  Se o passo de criação falhar com 'Resource not accessible' ou 'GraphQL Error',"
-        echo "       verifique o item 2 acima imediatamente."
-        echo "---------------------------------------------------------------"
-        echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 1: SCAN E GERAÇÃO DE ARQUIVO
+    # STEP 1: SCAN
     # ------------------------------------------------------------------
     - id: scan
+      if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
       env:
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -103,10 +89,11 @@ runs:
         REPORT_DIR: ${{ inputs.report_dir }}
       run: |
         set -euo pipefail
-        echo "🔎 Iniciando varredura..."
+        echo "🔎 Scanning..."
         
-        TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-        FULL_PATH="./$REPORT_DIR/$TIMESTAMP.md"
+        # Nome fixo para garantir idempotência
+        FILENAME="audit-report.md"
+        FULL_PATH="./$REPORT_DIR/$FILENAME"
         mkdir -p "$REPORT_DIR"
 
         FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE_SHA" "$HEAD_SHA" \
@@ -121,11 +108,9 @@ runs:
 
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
-        echo "# Relatório de Literais Hardcoded" > "$FULL_PATH"
-        echo "**Data:** $TIMESTAMP" >> "$FULL_PATH"
-        echo "**Origem:** SHA $HEAD_SHA" >> "$FULL_PATH"
+        echo "# 🛡️ Code Literal Audit" > "$FULL_PATH"
+        echo "> **Data:** $(date -u)" >> "$FULL_PATH"
         echo "" >> "$FULL_PATH"
-        echo "## 🔍 Evidências Brutas" >> "$FULL_PATH"
         echo "\`\`\`text" >> "$FULL_PATH"
         echo "$FILES" | xargs -r grep -HnE "$PATTERN" >> "$FULL_PATH" || true
         echo "\`\`\`" >> "$FULL_PATH"
@@ -143,14 +128,15 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # STEP 2: CRIAR BRANCH E PR DE RELATÓRIO
+    # STEP 2: GIT OPS (BRANCH & PR)
     # ------------------------------------------------------------------
     - id: create_pr
+      if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
         REPORT_PATH: ${{ steps.scan.outputs.path }}
-        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        HEAD_REF: ${{ github.head_ref }} # Usando contexto direto é mais seguro
         PR_NUM: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
@@ -159,38 +145,39 @@ runs:
         PR_URL=""
         
         if [ "$STATUS" == "FOUND" ]; then
-           echo "🚀 Preparando Pull Request de Relatório..."
-           
            git config user.name "sentinel-bot"
            git config user.email "sentinel-bot@users.noreply.github.com"
            
+           # Padrão fixo: sentinel/audit/<branch-origem>
            REPORT_BRANCH="sentinel/audit/${HEAD_REF}"
            
            git checkout "$HEAD_REF"
            git checkout -B "$REPORT_BRANCH"
-           git add "$REPORT_PATH"
-           git commit -m "docs(sentinel): add literal scan report [skip ci]"
            
-           echo "📡 Enviando Branch..."
+           git add "$REPORT_PATH"
+           # [skip ci] no commit é vital
+           git commit -m "docs(sentinel): update audit report [skip ci]"
+           
            git push -f origin "$REPORT_BRANCH"
            
-           echo "📡 Criando/Atualizando PR..."
+           # Tenta criar PR, ignora se já existe
            gh pr create \
              --base "$HEAD_REF" \
              --head "$REPORT_BRANCH" \
              --title "🛡️ Sentinel Audit: PR #$PR_NUM" \
-             --body "Relatório automático de literais hardcoded para a branch \`$HEAD_REF\`." || true
+             --body "Relatório de literais para branch \`$HEAD_REF\`." || true
              
            PR_URL=$(gh pr view "$REPORT_BRANCH" --json url -q .url)
-           echo "✅ PR Disponível: $PR_URL"
+           echo "✅ PR: $PR_URL"
         fi
         
         echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
-    # STEP 3: GERAR JSON FINAL
+    # STEP 3: JSON OUTPUT
     # ------------------------------------------------------------------
     - id: generate_output
+      if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
       env:
         PR_URL: ${{ steps.create_pr.outputs.pr_url }}
@@ -210,7 +197,7 @@ runs:
            COLOR="#3fb950"
         else
            MSG="Ignorado."
-           GUIDE="Sem alterações em arquivos monitorados."
+           GUIDE="Sem alterações."
            COLOR="#8b949e"
         fi
 
