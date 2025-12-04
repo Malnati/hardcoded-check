@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v2.0.1
+# Malnati/code-literal-sentinel@v2.1.0
 name: "Code Literal Sentinel"
 description: "Varredura agressiva de literais. Gera um relatório e abre uma PR dedicada para análise."
 author: "Ricardo Malnati"
@@ -52,20 +52,42 @@ runs:
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 0.5: VERIFICAÇÃO DE ESCRITA
+    # STEP 0.5: VERIFICAÇÃO DE PERMISSÕES E CONFIGURAÇÃO
     # ------------------------------------------------------------------
     - id: check_perms
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
       run: |
-        echo "::group::🔐 Step 0.5: Permission Check"
+        echo "::group::🔐 Step 0.5: Security & Permissions Check"
+        
+        # 1. Validação do Input Token
         if [ -z "$TOKEN" ]; then
-           echo "❌ Token não fornecido."
+           echo "❌ Erro Crítico: Token não fornecido."
            exit 1
         fi
-        echo "✅ Token presente. A validação final ocorrerá no 'git push'."
-        echo "   Requisito: 'contents: write' e 'pull-requests: write'."
+        echo "✅ Input Token: Recebido."
+
+        # 2. Checklist de Permissões (Educativo)
+        echo ""
+        echo "📋 CHECKLIST DE REQUISITOS OBRIGATÓRIOS:"
+        echo "   Para que esta Action possa criar a Branch e a PR de relatório,"
+        echo "   o ambiente deve atender aos dois requisitos abaixo:"
+        echo ""
+        echo "   1️⃣  Permissões do Workflow (YAML):"
+        echo "       permissions:"
+        echo "         contents: write       # Para fazer git push"
+        echo "         pull-requests: write  # Para criar a PR"
+        echo ""
+        echo "   2️⃣  Configuração do Repositório (Settings):"
+        echo "       Você deve habilitar a criação de PRs por Actions."
+        echo "       👉 Vá em: Settings > Actions > General"
+        echo "       👉 Seção: Workflow permissions"
+        echo "       👉 Marque: [x] Allow GitHub Actions to create and approve pull requests"
+        echo ""
+        echo "   ⚠️  Se o passo de criação falhar com 'Resource not accessible' ou 'GraphQL Error',"
+        echo "       verifique o item 2 acima imediatamente."
+        echo "---------------------------------------------------------------"
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
@@ -81,13 +103,12 @@ runs:
         REPORT_DIR: ${{ inputs.report_dir }}
       run: |
         set -euo pipefail
-        
         echo "🔎 Iniciando varredura..."
+        
         TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
         FULL_PATH="./$REPORT_DIR/$TIMESTAMP.md"
         mkdir -p "$REPORT_DIR"
 
-        # 1. Listar arquivos
         FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE_SHA" "$HEAD_SHA" \
           | grep -E "\.($EXTS)$" \
           | grep -vE "$EXCLUDE" || true)
@@ -98,10 +119,8 @@ runs:
           exit 0
         fi
 
-        # 2. Grep Agressivo
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
-        # Gerar conteúdo Markdown
         echo "# Relatório de Literais Hardcoded" > "$FULL_PATH"
         echo "**Data:** $TIMESTAMP" >> "$FULL_PATH"
         echo "**Origem:** SHA $HEAD_SHA" >> "$FULL_PATH"
@@ -111,7 +130,6 @@ runs:
         echo "$FILES" | xargs -r grep -HnE "$PATTERN" >> "$FULL_PATH" || true
         echo "\`\`\`" >> "$FULL_PATH"
 
-        # Verifica contagem
         COUNT=$(grep -cE "$PATTERN" "$FULL_PATH" || true)
         
         if [ "$COUNT" -gt "0" ]; then
@@ -146,24 +164,17 @@ runs:
            git config user.name "sentinel-bot"
            git config user.email "sentinel-bot@users.noreply.github.com"
            
-           # CORREÇÃO DE CONFLITO DE REF GIT:
-           # Em vez de 'origem/audit', usamos 'sentinel/audit/origem'
            REPORT_BRANCH="sentinel/audit/${HEAD_REF}"
            
-           # Checkout da Branch de Origem
            git checkout "$HEAD_REF"
-           
-           # Cria/Reseta a branch de relatório
            git checkout -B "$REPORT_BRANCH"
-           
            git add "$REPORT_PATH"
            git commit -m "docs(sentinel): add literal scan report [skip ci]"
            
-           # Push forçado
+           echo "📡 Enviando Branch..."
            git push -f origin "$REPORT_BRANCH"
            
            echo "📡 Criando/Atualizando PR..."
-           
            gh pr create \
              --base "$HEAD_REF" \
              --head "$REPORT_BRANCH" \
@@ -171,7 +182,6 @@ runs:
              --body "Relatório automático de literais hardcoded para a branch \`$HEAD_REF\`." || true
              
            PR_URL=$(gh pr view "$REPORT_BRANCH" --json url -q .url)
-           
            echo "✅ PR Disponível: $PR_URL"
         fi
         
