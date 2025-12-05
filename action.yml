@@ -1,6 +1,6 @@
-# Malnati/code-literal-sentinel@v2.4.0
+# Malnati/code-literal-sentinel@v2.5.0
 name: "Code Literal Sentinel"
-description: "Varredura agressiva e relatórios de auditoria com gerenciamento autônomo de histórico."
+description: "Varredura com idempotência baseada em Assinatura de Conteúdo (Anti-Loop Definitivo)."
 author: "Ricardo Malnati"
 
 branding:
@@ -12,13 +12,13 @@ inputs:
     description: "GitHub token."
     required: true
   file_extensions:
-    description: "Regex de extensões para varrer."
+    description: "Regex de extensões."
     required: false
     default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
   exclude_patterns:
-    description: "Regex de caminhos para ignorar."
+    description: "Regex de ignorados."
     required: false
-    # Adicionado o próprio diretório padrão de relatório para evitar auto-detecção
+    # Ignoramos o próprio diretório de relatórios na geração da assinatura
     default: "node_modules|dist|build|.git|.github/sentinel-reports"
 
 outputs:
@@ -37,42 +37,40 @@ runs:
       env:
         EXTS: ${{ inputs.file_extensions }}
       run: |
-        echo "::group::🔍 Step 0: Sentinel Configuration (v2.4.0)"
+        echo "::group::🔍 Step 0: Sentinel Configuration (v2.5.0)"
         echo "⚙️  Extensions: .($EXTS)"
         echo "⚙️  Mode: Managed (Internal Paths)"
+        echo "⚙️  Strategy: Content Signature Idempotency"
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 0.1: CIRCUIT BREAKER (ANTI-LOOP)
+    # STEP 0.1: CIRCUIT BREAKER (Branch Name & Bot)
     # ------------------------------------------------------------------
     - id: circuit_breaker
       shell: bash
       env:
         HEAD_REF: ${{ github.head_ref }}
       run: |
-        # Definição da identidade do BOT (Constante Interna)
         BOT_NAME="sentinel-bot"
         
-        # 1. Check Branch Name
         if [[ "$HEAD_REF" == "sentinel/"* ]]; then
-           echo "🛑 Loop Branch: Detectada branch de auditoria ($HEAD_REF)."
+           echo "🛑 Loop Branch: Branch de auditoria ignorada."
            echo "skip=true" >> "$GITHUB_OUTPUT"
            exit 0
         fi
 
-        # 2. Check Author (Se histórico disponível)
+        # Tenta identificar se o último commit foi apenas de documentação do bot
         if [ -f .git/shallow ]; then
            git fetch --depth=1 origin "$HEAD_REF" 2>/dev/null || true
         fi
         LAST_AUTHOR=$(git log -1 --pretty=format:'%an')
 
         if [[ "$LAST_AUTHOR" == "$BOT_NAME" ]]; then
-           echo "🛑 Loop Bot: O último commit foi feito pelo $BOT_NAME."
+           echo "🛑 Loop Bot: Commit do Bot ignorado."
            echo "skip=true" >> "$GITHUB_OUTPUT"
            exit 0
         fi
 
-        echo "✅ Safe to proceed."
         echo "skip=false" >> "$GITHUB_OUTPUT"
 
     # ------------------------------------------------------------------
@@ -90,37 +88,51 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # STEP 0.8: BUSCA HISTÓRICA OTIMIZADA (Deep Search)
+    # STEP 0.8: CÁLCULO DE ASSINATURA E BUSCA (A Mágica acontece aqui)
     # ------------------------------------------------------------------
     - id: global_check
       if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
       env:
+        EXTS: ${{ inputs.file_extensions }}
+        EXCLUDE: ${{ inputs.exclude_patterns }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
-        echo "::group::🕵️ Step 0.8: Targeted History Search"
+        echo "::group::🕵️ Step 0.8: Content Signature Check"
         
-        # Constante Interna (Deve bater com a do Step 2)
+        # 1. Gerar Assinatura do Código Atual
+        # Lista todos os arquivos trackeados, filtra pelas extensões e exclusões, e gera um hash do conjunto
+        echo "🧮 Calculando assinatura do código..."
+        
+        SIGNATURE=$(git ls-tree -r HEAD --name-only \
+          | grep -E "\.($EXTS)$" \
+          | grep -vE "$EXCLUDE" \
+          | xargs -d '\n' git hash-object 2>/dev/null | md5sum | awk '{print $1}' || echo "empty")
+          
+        echo "🔑 Assinatura Atual: $SIGNATURE"
+        
+        # 2. Preparar Busca Histórica
         INTERNAL_BOT_EMAIL="sentinel-bot@users.noreply.github.com"
-        
         if [ -f .git/shallow ]; then
            git fetch --unshallow 2>/dev/null || true
         fi
         git fetch --all --quiet
 
-        SEARCH_KEY="> **Source SHA:** $HEAD_SHA"
-        echo "🔍 Buscando assinatura: $HEAD_SHA"
+        SEARCH_KEY="> **Content Signature:** $SIGNATURE"
+        echo "🔍 Buscando relatório prévio com esta assinatura..."
 
-        # Busca apenas nos commits feitos pelo nosso e-mail interno
+        # Busca apenas nos commits do bot
         FOUND_REF=$(git grep -I -F -l "$SEARCH_KEY" $(git rev-list --all --author="$INTERNAL_BOT_EMAIL") -- "*.md" 2>/dev/null | head -n 1 || true)
         
         if [ -n "$FOUND_REF" ]; then
            echo "✅ Relatório Válido Encontrado: $FOUND_REF"
+           echo "   O código fonte não mudou desde a última auditoria."
            echo "found=true" >> "$GITHUB_OUTPUT"
            echo "ref=$FOUND_REF" >> "$GITHUB_OUTPUT"
         else
-           echo "⚪ Nenhum relatório válido encontrado."
+           echo "⚪ Nenhuma auditoria encontrada para esta assinatura de código."
            echo "found=false" >> "$GITHUB_OUTPUT"
+           echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
         fi
         echo "::endgroup::"
 
@@ -135,11 +147,11 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         EXTS: ${{ inputs.file_extensions }}
         EXCLUDE: ${{ inputs.exclude_patterns }}
+        SIGNATURE: ${{ steps.global_check.outputs.signature }}
       run: |
         set -euo pipefail
         echo "🔎 Scanning..."
         
-        # CONSTANTES INTERNAS (Hardcoded para segurança e consistência)
         REPORT_DIR=".github/sentinel-reports"
         FILENAME="audit-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
@@ -159,6 +171,7 @@ runs:
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
         echo "# 🛡️ Code Literal Audit" > "$FULL_PATH"
+        echo "> **Content Signature:** $SIGNATURE" >> "$FULL_PATH"
         echo "> **Source SHA:** $HEAD_SHA" >> "$FULL_PATH"
         echo "> **Data:** $(date -u)" >> "$FULL_PATH"
         echo "" >> "$FULL_PATH"
@@ -179,7 +192,7 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # STEP 2: GIT OPS
+    # STEP 2: GIT OPS (Mesma lógica de antes)
     # ------------------------------------------------------------------
     - id: create_pr
       if: steps.circuit_breaker.outputs.skip != 'true' && steps.global_check.outputs.found != 'true'
@@ -194,8 +207,6 @@ runs:
         
         STATUS=$(cat /tmp/scan_status)
         PR_URL=""
-        
-        # CONSTANTES INTERNAS
         INTERNAL_BOT_NAME="sentinel-bot"
         INTERNAL_BOT_EMAIL="sentinel-bot@users.noreply.github.com"
         
@@ -207,17 +218,15 @@ runs:
            
            git checkout "$HEAD_REF"
            git checkout -B "$REPORT_BRANCH"
-           
            git add "$REPORT_PATH"
-           git commit -m "docs(sentinel): audit report for ${HEAD_REF} [skip ci]"
-           
+           git commit -m "docs(sentinel): audit report [skip ci]"
            git push -f origin "$REPORT_BRANCH"
            
            gh pr create \
              --base "$HEAD_REF" \
              --head "$REPORT_BRANCH" \
              --title "🛡️ Sentinel Audit: PR #$PR_NUM" \
-             --body "Relatório de literais para branch \`$HEAD_REF\`." || true
+             --body "Relatório de literais." || true
              
            PR_URL=$(gh pr view "$REPORT_BRANCH" --json url -q .url)
            echo "✅ PR: $PR_URL"
@@ -250,16 +259,15 @@ runs:
            STATUS="PREVIOUSLY_AUDITED"
            MSG="Já auditado."
            CLEAN_REF=$(echo "$GLOBAL_REF" | cut -d':' -f1)
-           GUIDE="Relatório existente: \`$CLEAN_REF\`."
+           GUIDE="A assinatura do código não mudou. Relatório existente em: \`$CLEAN_REF\`."
            COLOR="#3fb950"
-           
         elif [ "$STATUS" == "FOUND" ]; then
            MSG="Literais detectados ($COUNT)."
-           GUIDE="Relatório disponível em: **[Ver PR de Auditoria]($PR_URL)**."
+           GUIDE="Relatório gerado: **[Ver PR de Auditoria]($PR_URL)**."
            COLOR="#dbab09"
         elif [ "$STATUS" == "CLEAN" ]; then
            MSG="Código limpo."
-           GUIDE="Nenhum literal hardcoded detectado."
+           GUIDE="Nenhum literal."
            COLOR="#3fb950"
         else
            MSG="Ignorado."
