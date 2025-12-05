@@ -1,6 +1,6 @@
-# Malnati/code-literal-sentinel@v2.3.0
+# Malnati/code-literal-sentinel@v2.3.1
 name: "Code Literal Sentinel"
-description: "Varredura agressiva com verificação global de idempotência (Deep Search)."
+description: "Varredura agressiva. Auto-gerencia histórico git e previne loops por verificação de autor."
 author: "Ricardo Malnati"
 
 branding:
@@ -41,25 +41,48 @@ runs:
         EXTS: ${{ inputs.file_extensions }}
         DIR: ${{ inputs.report_dir }}
       run: |
-        echo "::group::🔍 Step 0: Sentinel Configuration (v2.3.0)"
-        echo "👁️  Code Literal Sentinel (Global Idempotency Mode)"
-        echo "⚙️  Configuração:"
-        echo "    - Extensões: .($EXTS)"
-        echo "    - Destino:   $DIR"
+        echo "::group::🔍 Step 0: Sentinel Configuration (v2.3.1)"
+        echo "⚙️  Extensions: .($EXTS)"
+        echo "⚙️  Target Dir: $DIR"
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 0.1: CIRCUIT BREAKER (TIPO 1 - Branch Name)
+    # STEP 0.1: CIRCUIT BREAKER (DUPLA CHECAGEM)
+    # 1. Nome da Branch
+    # 2. Autor do último commit (Infalível contra loops)
     # ------------------------------------------------------------------
     - id: circuit_breaker
       shell: bash
+      env:
+        HEAD_REF: ${{ github.head_ref }}
       run: |
-        if [[ "${{ github.head_ref }}" == "sentinel/"* ]]; then
-           echo "🛑 Loop detectado. Execução em branch de auditoria ignorada."
+        echo "::group::🛡️ Step 0.1: Anti-Loop Protection"
+        
+        # 1. Check de Branch
+        if [[ "$HEAD_REF" == "sentinel/"* ]]; then
+           echo "🛑 Loop Branch: Detectada branch de auditoria ($HEAD_REF)."
            echo "skip=true" >> "$GITHUB_OUTPUT"
-        else
-           echo "skip=false" >> "$GITHUB_OUTPUT"
+           exit 0
         fi
+
+        # 2. Check de Autor (Auto-correção de histórico raso se necessário para ler log)
+        if [ -f .git/shallow ]; then
+           # Precisamos de pelo menos 1 commit de histórico para ver o autor
+           git fetch --depth=1 origin "$HEAD_REF" 2>/dev/null || true
+        fi
+
+        LAST_AUTHOR=$(git log -1 --pretty=format:'%an')
+        echo "👤 Último Autor: $LAST_AUTHOR"
+
+        if [[ "$LAST_AUTHOR" == "sentinel-bot" ]] || [[ "$LAST_AUTHOR" == "github-actions[bot]" ]]; then
+           echo "🛑 Loop Bot: O último commit foi feito por um bot."
+           echo "skip=true" >> "$GITHUB_OUTPUT"
+           exit 0
+        fi
+
+        echo "✅ Safe to proceed."
+        echo "skip=false" >> "$GITHUB_OUTPUT"
+        echo "::endgroup::"
 
     # ------------------------------------------------------------------
     # STEP 0.5: PERMISSÕES
@@ -76,8 +99,8 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # STEP 0.8: IDEMPOTÊNCIA GLOBAL (Deep Search)
-    # Procura em todo o histórico do git se este SHA já foi auditado
+    # STEP 0.8: BUSCA GLOBAL (AUTO-FETCH)
+    # A Action agora garante que tem o histórico necessário
     # ------------------------------------------------------------------
     - id: global_check
       if: steps.circuit_breaker.outputs.skip != 'true'
@@ -85,41 +108,36 @@ runs:
       env:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
-        echo "::group::🕵️ Step 0.8: Global Audit Search"
+        echo "::group::🕵️ Step 0.8: Deep Search (Global Idempotency)"
         
-        # Verifica se é shallow clone (comum em CI) e tenta buscar histórico para pesquisa
+        # AUTO-FETCH: Resolve o problema do usuário não ter fetch-depth: 0
         if [ -f .git/shallow ]; then
-           echo "⚠️  Repositório shallow detectado. A busca global pode ser limitada."
-           echo "    Recomendado: 'fetch-depth: 0' no checkout."
-           # Tentativa de fetch silenciosa (pode demorar em repos gigantes)
-           # git fetch --unshallow --filter=blob:none &>/dev/null || true
+           echo "⚙️  Repositório shallow detectado. Expandindo histórico automaticamente..."
+           # Tenta unshallow, se falhar (já for full), suprime erro
+           git fetch --unshallow 2>/dev/null || true
         fi
+        
+        # Garante que temos as referências remotas (onde as branches sentinel/ moram)
+        git fetch --all --quiet
 
         SEARCH_KEY="> **Source SHA:** $HEAD_SHA"
-        echo "🔍 Procurando assinatura de auditoria: '$SEARCH_KEY'"
-        echo "   Escopo: Todas as referências (Branches, Tags, Remotes)"
+        echo "🔍 Buscando assinatura: $HEAD_SHA"
 
-        # O comando mágico:
-        # 1. git rev-list --all: Lista todos os commits acessíveis
-        # 2. git grep: Procura a string dentro desses commits
-        # 3. -- "*.md": Otimização, olha apenas arquivos markdown
-        
+        # Busca em todos os commits acessíveis
         FOUND_REF=$(git grep -I -F -l "$SEARCH_KEY" $(git rev-list --all) -- "*.md" | head -n 1 || true)
         
         if [ -n "$FOUND_REF" ]; then
-           echo "✅ Auditoria prévia encontrada!"
-           echo "   Referência Git: $FOUND_REF"
-           echo "   O código atual ($HEAD_SHA) já possui um relatório válido no histórico."
+           echo "✅ Auditoria encontrada em: $FOUND_REF"
            echo "found=true" >> "$GITHUB_OUTPUT"
            echo "ref=$FOUND_REF" >> "$GITHUB_OUTPUT"
         else
-           echo "⚪ Nenhuma auditoria prévia encontrada para este SHA."
+           echo "⚪ Nenhuma auditoria prévia encontrada."
            echo "found=false" >> "$GITHUB_OUTPUT"
         fi
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 1: SCAN (Só roda se não achou globalmente)
+    # STEP 1: SCAN
     # ------------------------------------------------------------------
     - id: scan
       if: steps.circuit_breaker.outputs.skip != 'true' && steps.global_check.outputs.found != 'true'
@@ -132,7 +150,7 @@ runs:
         REPORT_DIR: ${{ inputs.report_dir }}
       run: |
         set -euo pipefail
-        echo "🔎 Scanning diff..."
+        echo "🔎 Scanning..."
         
         FILENAME="audit-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
@@ -195,11 +213,12 @@ runs:
            
            git checkout "$HEAD_REF"
            git checkout -B "$REPORT_BRANCH"
+           
            git add "$REPORT_PATH"
            git commit -m "docs(sentinel): audit report for ${HEAD_REF} [skip ci]"
+           
            git push -f origin "$REPORT_BRANCH"
            
-           # Tenta criar PR
            gh pr create \
              --base "$HEAD_REF" \
              --head "$REPORT_BRANCH" \
@@ -225,37 +244,35 @@ runs:
       run: |
         set -euo pipefail
         
-        # Recupera status, default para valores vazios
+        # Recupera status
         if [ -f /tmp/scan_status ]; then
            STATUS=$(cat /tmp/scan_status)
            COUNT=$(cat /tmp/scan_count)
         else
-           # Se não rodou scan (ex: achou globalmente), definimos defaults
            STATUS="SKIPPED"
            COUNT="-"
         fi
         
-        # Lógica de Mensagem de Interface
         if [ "$GLOBAL_FOUND" == "true" ]; then
            STATUS="PREVIOUSLY_AUDITED"
            MSG="Já auditado."
-           # Removemos detalhes técnicos da ref do git grep (SHA:PATH)
            CLEAN_REF=$(echo "$GLOBAL_REF" | cut -d':' -f1)
-           GUIDE="O código atual já possui um relatório de auditoria válido encontrado em: \`$CLEAN_REF\`."
-           COLOR="#3fb950" # Verde (Economizamos processamento!)
+           GUIDE="Relatório existente encontrado em: \`$CLEAN_REF\`."
+           COLOR="#3fb950"
+           # Tenta achar a PR aberta associada a essa branch (opcional)
+           # Por simplicidade, mantemos o link vazio aqui ou buscamos via CLI se quisermos ser perfeitos
            
         elif [ "$STATUS" == "FOUND" ]; then
            MSG="Literais detectados ($COUNT)."
            GUIDE="Relatório disponível em: **[Ver PR de Auditoria]($PR_URL)**."
            COLOR="#dbab09"
-           
-        elif [ "$STATUS" == "CLEAN" ] || [ "$STATUS" == "NO_FILES" ]; then
+        elif [ "$STATUS" == "CLEAN" ]; then
            MSG="Código limpo."
-           GUIDE="Nenhum literal hardcoded detectado."
+           GUIDE="Nenhum literal detectado."
            COLOR="#3fb950"
         else
            MSG="Ignorado."
-           GUIDE="Sem alterações relevantes."
+           GUIDE="Sem alterações."
            COLOR="#8b949e"
         fi
 
@@ -269,7 +286,7 @@ runs:
           '{
             analysis: {
               status: $status,
-              total_findings: $count,
+              total_findings: ($count | tonumber),
               report_pr_url: $url
             },
             ui: {
