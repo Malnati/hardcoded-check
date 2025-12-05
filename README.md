@@ -1,7 +1,7 @@
 <!-- README.md -->
 <div align="center">
 
-![Code Literal Sentinel Banner](https://github.com/Malnati/code-literal-sentinel/assets/PLACEHOLDER_PARA_SUA_IMAGEM.jpg)
+![Code Literal Sentinel Banner](https://github.com/Malnati/code-literal-sentinel/blob/47fcf2d80a2b7927f0b33d463e5cf8b7d62d336e/code-literal-sentinel.jpeg)
 
 # 👁️ Code Literal Sentinel
 
