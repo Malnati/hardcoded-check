@@ -1,6 +1,6 @@
-# Malnati/code-literal-sentinel@v2.3.1
+# Malnati/code-literal-sentinel@v2.4.0
 name: "Code Literal Sentinel"
-description: "Varredura agressiva. Auto-gerencia histórico git e previne loops por verificação de autor."
+description: "Varredura agressiva e relatórios de auditoria com gerenciamento autônomo de histórico."
 author: "Ricardo Malnati"
 
 branding:
@@ -12,17 +12,14 @@ inputs:
     description: "GitHub token."
     required: true
   file_extensions:
-    description: "Regex de extensões."
+    description: "Regex de extensões para varrer."
     required: false
     default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
   exclude_patterns:
-    description: "Regex de ignorados."
+    description: "Regex de caminhos para ignorar."
     required: false
-    default: "node_modules|dist|build|.git|reports/code-literal-sentinel"
-  report_dir:
-    description: "Diretório dos relatórios."
-    required: false
-    default: "reports/code-literal-sentinel"
+    # Adicionado o próprio diretório padrão de relatório para evitar auto-detecção
+    default: "node_modules|dist|build|.git|.github/sentinel-reports"
 
 outputs:
   result_json:
@@ -39,50 +36,44 @@ runs:
       shell: bash
       env:
         EXTS: ${{ inputs.file_extensions }}
-        DIR: ${{ inputs.report_dir }}
       run: |
-        echo "::group::🔍 Step 0: Sentinel Configuration (v2.3.1)"
+        echo "::group::🔍 Step 0: Sentinel Configuration (v2.4.0)"
         echo "⚙️  Extensions: .($EXTS)"
-        echo "⚙️  Target Dir: $DIR"
+        echo "⚙️  Mode: Managed (Internal Paths)"
         echo "::endgroup::"
 
     # ------------------------------------------------------------------
-    # STEP 0.1: CIRCUIT BREAKER (DUPLA CHECAGEM)
-    # 1. Nome da Branch
-    # 2. Autor do último commit (Infalível contra loops)
+    # STEP 0.1: CIRCUIT BREAKER (ANTI-LOOP)
     # ------------------------------------------------------------------
     - id: circuit_breaker
       shell: bash
       env:
         HEAD_REF: ${{ github.head_ref }}
       run: |
-        echo "::group::🛡️ Step 0.1: Anti-Loop Protection"
+        # Definição da identidade do BOT (Constante Interna)
+        BOT_NAME="sentinel-bot"
         
-        # 1. Check de Branch
+        # 1. Check Branch Name
         if [[ "$HEAD_REF" == "sentinel/"* ]]; then
            echo "🛑 Loop Branch: Detectada branch de auditoria ($HEAD_REF)."
            echo "skip=true" >> "$GITHUB_OUTPUT"
            exit 0
         fi
 
-        # 2. Check de Autor (Auto-correção de histórico raso se necessário para ler log)
+        # 2. Check Author (Se histórico disponível)
         if [ -f .git/shallow ]; then
-           # Precisamos de pelo menos 1 commit de histórico para ver o autor
            git fetch --depth=1 origin "$HEAD_REF" 2>/dev/null || true
         fi
-
         LAST_AUTHOR=$(git log -1 --pretty=format:'%an')
-        echo "👤 Último Autor: $LAST_AUTHOR"
 
-        if [[ "$LAST_AUTHOR" == "sentinel-bot" ]] || [[ "$LAST_AUTHOR" == "github-actions[bot]" ]]; then
-           echo "🛑 Loop Bot: O último commit foi feito por um bot."
+        if [[ "$LAST_AUTHOR" == "$BOT_NAME" ]]; then
+           echo "🛑 Loop Bot: O último commit foi feito pelo $BOT_NAME."
            echo "skip=true" >> "$GITHUB_OUTPUT"
            exit 0
         fi
 
         echo "✅ Safe to proceed."
         echo "skip=false" >> "$GITHUB_OUTPUT"
-        echo "::endgroup::"
 
     # ------------------------------------------------------------------
     # STEP 0.5: PERMISSÕES
@@ -99,8 +90,7 @@ runs:
         fi
 
     # ------------------------------------------------------------------
-    # STEP 0.8: BUSCA GLOBAL (AUTO-FETCH)
-    # A Action agora garante que tem o histórico necessário
+    # STEP 0.8: BUSCA HISTÓRICA OTIMIZADA (Deep Search)
     # ------------------------------------------------------------------
     - id: global_check
       if: steps.circuit_breaker.outputs.skip != 'true'
@@ -108,30 +98,28 @@ runs:
       env:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
-        echo "::group::🕵️ Step 0.8: Deep Search (Global Idempotency)"
+        echo "::group::🕵️ Step 0.8: Targeted History Search"
         
-        # AUTO-FETCH: Resolve o problema do usuário não ter fetch-depth: 0
+        # Constante Interna (Deve bater com a do Step 2)
+        INTERNAL_BOT_EMAIL="sentinel-bot@users.noreply.github.com"
+        
         if [ -f .git/shallow ]; then
-           echo "⚙️  Repositório shallow detectado. Expandindo histórico automaticamente..."
-           # Tenta unshallow, se falhar (já for full), suprime erro
            git fetch --unshallow 2>/dev/null || true
         fi
-        
-        # Garante que temos as referências remotas (onde as branches sentinel/ moram)
         git fetch --all --quiet
 
         SEARCH_KEY="> **Source SHA:** $HEAD_SHA"
         echo "🔍 Buscando assinatura: $HEAD_SHA"
 
-        # Busca em todos os commits acessíveis
-        FOUND_REF=$(git grep -I -F -l "$SEARCH_KEY" $(git rev-list --all) -- "*.md" | head -n 1 || true)
+        # Busca apenas nos commits feitos pelo nosso e-mail interno
+        FOUND_REF=$(git grep -I -F -l "$SEARCH_KEY" $(git rev-list --all --author="$INTERNAL_BOT_EMAIL") -- "*.md" 2>/dev/null | head -n 1 || true)
         
         if [ -n "$FOUND_REF" ]; then
-           echo "✅ Auditoria encontrada em: $FOUND_REF"
+           echo "✅ Relatório Válido Encontrado: $FOUND_REF"
            echo "found=true" >> "$GITHUB_OUTPUT"
            echo "ref=$FOUND_REF" >> "$GITHUB_OUTPUT"
         else
-           echo "⚪ Nenhuma auditoria prévia encontrada."
+           echo "⚪ Nenhum relatório válido encontrado."
            echo "found=false" >> "$GITHUB_OUTPUT"
         fi
         echo "::endgroup::"
@@ -147,11 +135,12 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         EXTS: ${{ inputs.file_extensions }}
         EXCLUDE: ${{ inputs.exclude_patterns }}
-        REPORT_DIR: ${{ inputs.report_dir }}
       run: |
         set -euo pipefail
         echo "🔎 Scanning..."
         
+        # CONSTANTES INTERNAS (Hardcoded para segurança e consistência)
+        REPORT_DIR=".github/sentinel-reports"
         FILENAME="audit-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
         mkdir -p "$REPORT_DIR"
@@ -163,6 +152,7 @@ runs:
         if [ -z "$FILES" ]; then
           echo "NO_FILES" > /tmp/scan_status
           echo "0" > /tmp/scan_count
+          rm -f "$FULL_PATH"
           exit 0
         fi
 
@@ -205,9 +195,13 @@ runs:
         STATUS=$(cat /tmp/scan_status)
         PR_URL=""
         
+        # CONSTANTES INTERNAS
+        INTERNAL_BOT_NAME="sentinel-bot"
+        INTERNAL_BOT_EMAIL="sentinel-bot@users.noreply.github.com"
+        
         if [ "$STATUS" == "FOUND" ]; then
-           git config user.name "sentinel-bot"
-           git config user.email "sentinel-bot@users.noreply.github.com"
+           git config user.name "$INTERNAL_BOT_NAME"
+           git config user.email "$INTERNAL_BOT_EMAIL"
            
            REPORT_BRANCH="sentinel/audit/${HEAD_REF}"
            
@@ -244,7 +238,6 @@ runs:
       run: |
         set -euo pipefail
         
-        # Recupera status
         if [ -f /tmp/scan_status ]; then
            STATUS=$(cat /tmp/scan_status)
            COUNT=$(cat /tmp/scan_count)
@@ -257,10 +250,8 @@ runs:
            STATUS="PREVIOUSLY_AUDITED"
            MSG="Já auditado."
            CLEAN_REF=$(echo "$GLOBAL_REF" | cut -d':' -f1)
-           GUIDE="Relatório existente encontrado em: \`$CLEAN_REF\`."
+           GUIDE="Relatório existente: \`$CLEAN_REF\`."
            COLOR="#3fb950"
-           # Tenta achar a PR aberta associada a essa branch (opcional)
-           # Por simplicidade, mantemos o link vazio aqui ou buscamos via CLI se quisermos ser perfeitos
            
         elif [ "$STATUS" == "FOUND" ]; then
            MSG="Literais detectados ($COUNT)."
@@ -268,7 +259,7 @@ runs:
            COLOR="#dbab09"
         elif [ "$STATUS" == "CLEAN" ]; then
            MSG="Código limpo."
-           GUIDE="Nenhum literal detectado."
+           GUIDE="Nenhum literal hardcoded detectado."
            COLOR="#3fb950"
         else
            MSG="Ignorado."
@@ -286,7 +277,7 @@ runs:
           '{
             analysis: {
               status: $status,
-              total_findings: ($count | tonumber),
+              total_findings: $count,
               report_pr_url: $url
             },
             ui: {
