@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.1
+# Malnati/code-literal-sentinel@v3.0.3
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -18,7 +18,6 @@ inputs:
   exclude_patterns:
     description: "Regex de ignorados."
     required: false
-    # Ignoramos o próprio diretório de relatórios na geração da assinatura
     default: "node_modules|dist|build|.git|.github/sentinel-reports"
 
 outputs:
@@ -30,9 +29,6 @@ runs:
   using: "composite"
   steps:
 
-    # ------------------------------------------------------------------
-    # STEP 0: PERMISSÕES
-    # ------------------------------------------------------------------
     - id: check_perms
       shell: bash
       env:
@@ -43,9 +39,6 @@ runs:
            exit 1
         fi
 
-    # ------------------------------------------------------------------
-    # STEP 1: SCAN
-    # ------------------------------------------------------------------
     - id: scan
       shell: bash
       env:
@@ -53,7 +46,6 @@ runs:
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         EXTS: ${{ inputs.file_extensions }}
         EXCLUDE: ${{ inputs.exclude_patterns }}
-        SIGNATURE: ${{ steps.global_check.outputs.signature }}
       run: |
         set -euo pipefail
         echo "🔎 Scanning..."
@@ -61,10 +53,9 @@ runs:
         echo "HEAD_SHA: $HEAD_SHA"
         echo "EXTS: $EXTS"
         echo "EXCLUDE: $EXCLUDE"
-        echo "SIGNATURE: $SIGNATURE"
         
         REPORT_DIR=".github/sentinel-reports"
-        FILENAME="audit-report.md"
+        FILENAME="hardcode-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
         mkdir -p "$REPORT_DIR"
 
@@ -87,8 +78,7 @@ runs:
 
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
-        echo "# 🛡️ Code Literal Audit" > "$FULL_PATH"
-        echo "> **Content Signature:** $SIGNATURE" >> "$FULL_PATH"
+        echo "# 🛡️ Code Literal Sentinel" > "$FULL_PATH"
         echo "> **Source SHA:** $HEAD_SHA" >> "$FULL_PATH"
         echo "> **Data:** $(date -u)" >> "$FULL_PATH"
         echo "" >> "$FULL_PATH"
@@ -114,9 +104,6 @@ runs:
            echo "report_path=" >> "$GITHUB_OUTPUT"
         fi
 
-    # ------------------------------------------------------------------
-    # STEP 2: JSON OUTPUT
-    # ------------------------------------------------------------------
     - id: generate_output
       if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
@@ -146,7 +133,7 @@ runs:
         fi
 
         if command -v jq >/dev/null 2>&1; then
-          JSON=$(jq -n \
+          JSON=$(jq -c -n \
             --arg status "$STATUS" \
             --arg count "$COUNT" \
             --arg global_found "$GLOBAL_FOUND" \
