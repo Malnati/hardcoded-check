@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.4
+# Malnati/code-literal-sentinel@v3.0.5
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -21,9 +21,15 @@ inputs:
     default: "node_modules|dist|build|.git|.github/sentinel-reports"
 
 outputs:
-  result_json:
+  json:
     description: "JSON de diagnóstico."
     value: ${{ steps.generate_output.outputs.json }}
+  status:
+    description: "Status da varredura."
+    value: ${{ steps.generate_output.outputs.status }}
+  count:
+    description: "Quantidade de literais encontrados."
+    value: ${{ steps.generate_output.outputs.count }}
 
 runs:
   using: "composite"
@@ -148,14 +154,3 @@ runs:
         echo "json=$JSON" >> "$GITHUB_OUTPUT"
         echo "status=$STATUS" >> "$GITHUB_OUTPUT"
         echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-
-    - id: finalize
-      shell: bash
-      run: |
-        set -euo pipefail
-        # monta $JSON ...
-        echo "JSON_RESULT: $JSON"
-        echo "json=$JSON" >> "$GITHUB_OUTPUT"
-        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-        echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-        
