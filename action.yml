@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.7
+# Malnati/code-literal-sentinel@v3.0.9
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -23,7 +23,7 @@ inputs:
     description: "Ramo origem."
     required: true
   head:
-    description: "Ramodestino."
+    description: "Ramod estino."
     required: true
 
 outputs:
@@ -48,14 +48,17 @@ runs:
       run: |
         if [ -z "$TOKEN" ]; then
            echo "❌ Token missing."
+           echo "TOKEN: $TOKEN"
            exit 1
         fi
         if [ -z "$BASE" ]; then
            echo "❌ Base branch missing."
+           echo "BASE: $BASE"
            exit 1
         fi
         if [ -z "$HEAD" ]; then
            echo "❌ Head branch missing."
+           echo "HEAD: $HEAD"
            exit 1
         fi
         
