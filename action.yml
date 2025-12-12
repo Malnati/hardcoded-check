@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.10
+# Malnati/code-literal-sentinel@v3.0.11
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -14,6 +14,10 @@ inputs:
   file_extensions:
     description: "Regex de extensões."
     required: false
+    default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
+  target_path:
+    description: "Caminhos de diretórios ou arquivos a serem investigados."
+    required: true
     default: "ts|js|jsx|tsx|java|py|go|cs|php|sh|json|yaml|yml"
   exclude_patterns:
     description: "Regex de ignorados."
@@ -47,6 +51,7 @@ runs:
         TOKEN: ${{ inputs.token }}
         BASE: ${{ inputs.base }}
         HEAD: ${{ inputs.head }}
+        TARGET_PATH: ${{ inputs.target_path }}
       run: |
         if [ -z "$TOKEN" ]; then
            echo "❌ Token missing."
@@ -63,30 +68,39 @@ runs:
            echo "HEAD: $HEAD"
            exit 1
         fi
-        
+        if [ -z "$TARGET_PATH" ]; then
+           echo "❌ Target path missing."
+           echo "TARGET_PATH: $TARGET_PATH"
+           exit 1
+        fi
+        for ROOT in $TARGET_PATH; do
+          if [ ! -d "$ROOT" ]; then
+            echo "❌ Caminho inválido em TARGET_PATH: $ROOT"
+            exit 1
+          fi
+        done
+
     - id: scan
       name: "🔎 Scanning hardcode"
       shell: bash
       env:
         EXTS: ${{ inputs.file_extensions }}
         EXCLUDE: ${{ inputs.exclude_patterns }}
-        BASE: ${{ inputs.base }}
-        HEAD: ${{ inputs.head }}
+        TARGET_PATH: ${{ inputs.target_path }}
       run: |
         set -euo pipefail
         echo "EXTS: $EXTS"
         echo "EXCLUDE: $EXCLUDE"
-        echo "BASE: $BASE"
-        echo "HEAD: $HEAD"
+        echo "TARGET_PATH: $TARGET_PATH"
         
         REPORT_DIR=".sentinel-reports"
         FILENAME="hardcode-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
         mkdir -p "$REPORT_DIR"
 
-        FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE" "$HEAD" \
-          | grep -E "\.($EXTS)$" \
-          | grep -vE "$EXCLUDE" || true)
+        FILES=$( find $TARGET_PATH -type f 2>/dev/null \
+                    | grep -E "\.($EXTS)$" \
+                    | grep -vE "$EXCLUDE" || true )
 
         echo "FILES:"
         echo "$FILES"
