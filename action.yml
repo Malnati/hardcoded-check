@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.12
+# Malnati/code-literal-sentinel@v3.0.13
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -100,7 +100,6 @@ runs:
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
         echo "# 🛡️ Code Literal Sentinel" > "$FULL_PATH"
-        echo "> **Source SHA:** $HEAD_SHA" >> "$FULL_PATH"
         echo "> **Data:** $(date -u)" >> "$FULL_PATH"
         echo "" >> "$FULL_PATH"
         echo "\`\`\`text" >> "$FULL_PATH"
