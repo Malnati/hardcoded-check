@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.9
+# Malnati/code-literal-sentinel@v3.0.10
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -45,6 +45,8 @@ runs:
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
+        BASE: ${{ inputs.base }}
+        HEAD: ${{ inputs.head }}
       run: |
         if [ -z "$TOKEN" ]; then
            echo "❌ Token missing."
