@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.11
+# Malnati/code-literal-sentinel@v3.0.12
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -22,13 +22,7 @@ inputs:
   exclude_patterns:
     description: "Regex de ignorados."
     required: false
-    default: "node_modules|dist|build|.git|.github/sentinel-reports"
-  base:
-    description: "Ramo origem."
-    required: true
-  head:
-    description: "Ramod estino."
-    required: true
+    default: "node_modules|dist|build|.git"
 
 outputs:
   json:
@@ -49,23 +43,11 @@ runs:
       shell: bash
       env:
         TOKEN: ${{ inputs.token }}
-        BASE: ${{ inputs.base }}
-        HEAD: ${{ inputs.head }}
         TARGET_PATH: ${{ inputs.target_path }}
       run: |
         if [ -z "$TOKEN" ]; then
            echo "❌ Token missing."
            echo "TOKEN: $TOKEN"
-           exit 1
-        fi
-        if [ -z "$BASE" ]; then
-           echo "❌ Base branch missing."
-           echo "BASE: $BASE"
-           exit 1
-        fi
-        if [ -z "$HEAD" ]; then
-           echo "❌ Head branch missing."
-           echo "HEAD: $HEAD"
            exit 1
         fi
         if [ -z "$TARGET_PATH" ]; then
