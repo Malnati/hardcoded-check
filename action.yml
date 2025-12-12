@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.13
+# Malnati/code-literal-sentinel@v3.0.15
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -79,49 +79,48 @@ runs:
         FILENAME="hardcode-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
         mkdir -p "$REPORT_DIR"
-
-        FILES=$( find $TARGET_PATH -type f 2>/dev/null \
-                    | grep -E "\.($EXTS)$" \
-                    | grep -vE "$EXCLUDE" || true )
-
+        
+        FILES=$(
+          find "$TARGET_PATH" -type f 2>/dev/null \
+            | grep -E "\.($EXTS)$" \
+            | grep -vE "$EXCLUDE" || true
+        )
+        
         echo "FILES:"
         echo "$FILES"
-
-        if [ -z "$FILES" ]; then
-          echo "NO_FILES" > /tmp/scan_status
-          echo "0" > /tmp/scan_count
-          rm -f "$FULL_PATH" || true
-          echo "status=NO_FILES" >> "$GITHUB_OUTPUT"
-          echo "count=0" >> "$GITHUB_OUTPUT"
-          echo "report_path=" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-
+        
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
         
-        echo "# 🛡️ Code Literal Sentinel" > "$FULL_PATH"
-        echo "> **Data:** $(date -u)" >> "$FULL_PATH"
-        echo "" >> "$FULL_PATH"
-        echo "\`\`\`text" >> "$FULL_PATH"
-        echo "$FILES" | xargs -r grep -HnE "$PATTERN" >> "$FULL_PATH" || true
-        echo "\`\`\`" >> "$FULL_PATH"
-
-        COUNT=$(grep -cE "$PATTERN" "$FULL_PATH" || true)
+        if [ -z "$FILES" ]; then
+          echo "[]" > "$FULL_PATH"
+          echo "NO_FILES" > /tmp/scan_status
+          echo "0" > /tmp/scan_count
+          echo "status=NO_FILES" >> "$GITHUB_OUTPUT"
+          echo "count=0" >> "$GITHUB_OUTPUT"
+          echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        
+        MATCHES=$(echo "$FILES" | xargs -r grep -HnE "$PATTERN" || true)
+        
+        JSON_ARRAY=$(printf '%s\n' "$MATCHES" | jq -R -s -c 'split("\n") | map(select(length>0))')
+        printf '%s\n' "$JSON_ARRAY" > "$FULL_PATH"
+        
+        COUNT=$(printf '%s\n' "$MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
         echo "COUNT: $COUNT"
         
         if [ "$COUNT" -gt "0" ]; then
-           echo "FOUND" > /tmp/scan_status
-           echo "$COUNT" > /tmp/scan_count
-           echo "status=FOUND" >> "$GITHUB_OUTPUT"
-           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-           echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
+          echo "FOUND" > /tmp/scan_status
+          echo "$COUNT" > /tmp/scan_count
+          echo "status=FOUND" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
         else
-           echo "CLEAN" > /tmp/scan_status
-           echo "0" > /tmp/scan_count
-           rm -f "$FULL_PATH" || true
-           echo "status=CLEAN" >> "$GITHUB_OUTPUT"
-           echo "count=0" >> "$GITHUB_OUTPUT"
-           echo "report_path=" >> "$GITHUB_OUTPUT"
+          echo "CLEAN" > /tmp/scan_status
+          echo "0" > /tmp/scan_count
+          echo "status=CLEAN" >> "$GITHUB_OUTPUT"
+          echo "count=0" >> "$GITHUB_OUTPUT"
+          echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
         fi
 
     - id: generate_output
