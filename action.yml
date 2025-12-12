@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.6
+# Malnati/code-literal-sentinel@v3.0.7
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -19,6 +19,12 @@ inputs:
     description: "Regex de ignorados."
     required: false
     default: "node_modules|dist|build|.git|.github/sentinel-reports"
+  base:
+    description: "Ramo origem."
+    required: true
+  head:
+    description: "Ramodestino."
+    required: true
 
 outputs:
   json:
@@ -44,27 +50,36 @@ runs:
            echo "❌ Token missing."
            exit 1
         fi
-
+        if [ -z "$BASE" ]; then
+           echo "❌ Base branch missing."
+           exit 1
+        fi
+        if [ -z "$HEAD" ]; then
+           echo "❌ Head branch missing."
+           exit 1
+        fi
+        
     - id: scan
+      name: "🔎 Scanning hardcode"
       shell: bash
       env:
         EXTS: ${{ inputs.file_extensions }}
         EXCLUDE: ${{ inputs.exclude_patterns }}
+        BASE: ${{ inputs.base }}
+        HEAD: ${{ inputs.head }}
       run: |
         set -euo pipefail
-        echo "🔎 Scanning..."
-        echo "BASE_SHA: $BASE_SHA"
-        echo "HEAD_SHA: $HEAD_SHA"
-
         echo "EXTS: $EXTS"
         echo "EXCLUDE: $EXCLUDE"
+        echo "BASE: $BASE"
+        echo "HEAD: $HEAD"
         
-        REPORT_DIR=".github/sentinel-reports"
+        REPORT_DIR=".sentinel-reports"
         FILENAME="hardcode-report.md"
         FULL_PATH="./$REPORT_DIR/$FILENAME"
         mkdir -p "$REPORT_DIR"
 
-        FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE_SHA" "$HEAD_SHA" \
+        FILES=$(git diff --name-only --diff-filter=ACMRTUXB "$BASE" "$HEAD" \
           | grep -E "\.($EXTS)$" \
           | grep -vE "$EXCLUDE" || true)
 
