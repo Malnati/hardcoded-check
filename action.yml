@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.16
+# Malnati/code-literal-sentinel@v3.0.17
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -89,7 +89,7 @@ runs:
         )
 
         echo "FILES:"
-        echo "$FILES"
+        echo "$FILES" | head -n 3
 
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
 
@@ -132,50 +132,34 @@ runs:
         echo "count=$COUNT" >> "$GITHUB_OUTPUT"
         echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
         echo "meta_path=$META_PATH" >> "$GITHUB_OUTPUT"
-
+        
     - id: generate_output
       if: steps.circuit_breaker.outputs.skip != 'true'
       shell: bash
       env:
         GLOBAL_FOUND: ${{ steps.global_check.outputs.found }}
         GLOBAL_REF: ${{ steps.global_check.outputs.ref }}
-        META_PATH: ${{ steps.scan.outputs.meta_path }}
+        REPORT_PATH: ${{ steps.scan.outputs.report_path }}
+        COUNT_IN: ${{ steps.scan.outputs.count }}
+        STATUS_IN: ${{ steps.scan.outputs.status }}
       run: |
         set -euo pipefail
 
-        REPORT_DIR=".sentinel-reports"
-        RESULT_PATH="./$REPORT_DIR/result.json"
-        mkdir -p "$REPORT_DIR"
+        STATUS="${STATUS_IN:-SKIPPED}"
+        COUNT="${COUNT_IN:--}"
 
-        STATUS="SKIPPED"
-        COUNT="-"
-        REPORT_PATH=""
-
-        if [ -n "${META_PATH:-}" ] && [ -f "$META_PATH" ]; then
-          STATUS=$(jq -r '.status // "SKIPPED"' "$META_PATH")
-          COUNT=$(jq -r '.count // "-"' "$META_PATH")
-          REPORT_PATH=$(jq -r '.report_path // ""' "$META_PATH")
-        fi
-
-        DETAIL=""
-        if [ "$GLOBAL_FOUND" = "true" ]; then
+        if [ "${GLOBAL_FOUND:-}" = "true" ]; then
           STATUS="PREVIOUSLY_AUDITED"
-          CLEAN_REF=$(echo "$GLOBAL_REF" | cut -d':' -f1)
-          DETAIL="A assinatura do código não mudou. Relatório existente em: \`$CLEAN_REF\`."
         fi
 
-        jq -c -n \
-          --arg status "$STATUS" \
-          --arg count "$COUNT" \
-          --arg global_found "${GLOBAL_FOUND:-}" \
-          --arg global_ref "${GLOBAL_REF:-}" \
-          --arg detail "$DETAIL" \
-          --arg report_path "$REPORT_PATH" \
-          '{status:$status, count:$count, global_found:$global_found, global_ref:$global_ref, detail:$detail, report_path:$report_path}' > "$RESULT_PATH"
+        if [ -n "${REPORT_PATH:-}" ] && [ -f "$REPORT_PATH" ]; then
+          JSON=$(cat "$REPORT_PATH")
+        else
+          JSON="[]"
+        fi
 
-        JSON=$(cat "$RESULT_PATH")
         echo "JSON_RESULT: $JSON"
         echo "json=$JSON" >> "$GITHUB_OUTPUT"
         echo "status=$STATUS" >> "$GITHUB_OUTPUT"
         echo "count=$COUNT" >> "$GITHUB_OUTPUT"
-        echo "result_path=$RESULT_PATH" >> "$GITHUB_OUTPUT"
+        echo "report_path=${REPORT_PATH:-}" >> "$GITHUB_OUTPUT"
