@@ -1,4 +1,4 @@
-# Malnati/code-literal-sentinel@v3.0.15
+# Malnati/code-literal-sentinel@v3.0.16
 name: "Code Literal Sentinel"
 description: "Varredura com idempotência."
 author: "Ricardo Malnati"
@@ -61,7 +61,7 @@ runs:
             exit 1
           fi
         done
-
+        
     - id: scan
       name: "🔎 Scanning hardcode"
       shell: bash
@@ -74,54 +74,64 @@ runs:
         echo "EXTS: $EXTS"
         echo "EXCLUDE: $EXCLUDE"
         echo "TARGET_PATH: $TARGET_PATH"
-        
+
         REPORT_DIR=".sentinel-reports"
-        FILENAME="hardcode-report.md"
-        FULL_PATH="./$REPORT_DIR/$FILENAME"
+        REPORT_NAME="hardcode-report.json"
+        META_NAME="scan-meta.json"
+        FULL_PATH="./$REPORT_DIR/$REPORT_NAME"
+        META_PATH="./$REPORT_DIR/$META_NAME"
         mkdir -p "$REPORT_DIR"
-        
+
         FILES=$(
           find "$TARGET_PATH" -type f 2>/dev/null \
             | grep -E "\.($EXTS)$" \
             | grep -vE "$EXCLUDE" || true
         )
-        
+
         echo "FILES:"
         echo "$FILES"
-        
+
         PATTERN="\"[^\"]{2,}\"|'[^']{2,}'"
-        
+
         if [ -z "$FILES" ]; then
-          echo "[]" > "$FULL_PATH"
-          echo "NO_FILES" > /tmp/scan_status
-          echo "0" > /tmp/scan_count
-          echo "status=NO_FILES" >> "$GITHUB_OUTPUT"
-          echo "count=0" >> "$GITHUB_OUTPUT"
-          echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
-          exit 0
-        fi
-        
-        MATCHES=$(echo "$FILES" | xargs -r grep -HnE "$PATTERN" || true)
-        
-        JSON_ARRAY=$(printf '%s\n' "$MATCHES" | jq -R -s -c 'split("\n") | map(select(length>0))')
-        printf '%s\n' "$JSON_ARRAY" > "$FULL_PATH"
-        
-        COUNT=$(printf '%s\n' "$MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
-        echo "COUNT: $COUNT"
-        
-        if [ "$COUNT" -gt "0" ]; then
-          echo "FOUND" > /tmp/scan_status
-          echo "$COUNT" > /tmp/scan_count
-          echo "status=FOUND" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "[]" > "$FULL_PATH"
+          STATUS="NO_FILES"
+          COUNT="0"
+          jq -c -n \
+            --arg status "$STATUS" \
+            --arg count "$COUNT" \
+            --arg report_path "$FULL_PATH" \
+            '{status:$status, count:$count, report_path:$report_path}' > "$META_PATH"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
           echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
-        else
-          echo "CLEAN" > /tmp/scan_status
-          echo "0" > /tmp/scan_count
-          echo "status=CLEAN" >> "$GITHUB_OUTPUT"
-          echo "count=0" >> "$GITHUB_OUTPUT"
-          echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
+          echo "meta_path=$META_PATH" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
+
+        MATCHES=$(echo "$FILES" | xargs -r grep -HnE "$PATTERN" || true)
+        JSON_ARRAY=$(printf '%s\n' "$MATCHES" | jq -R -s -c 'split("\n") | map(select(length>0))')
+        printf '%s\n' "$JSON_ARRAY" > "$FULL_PATH"
+
+        COUNT=$(printf '%s\n' "$MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+        echo "COUNT: $COUNT"
+
+        if [ "$COUNT" -gt "0" ]; then
+          STATUS="FOUND"
+        else
+          STATUS="CLEAN"
+        fi
+
+        jq -c -n \
+          --arg status "$STATUS" \
+          --arg count "$COUNT" \
+          --arg report_path "$FULL_PATH" \
+          '{status:$status, count:$count, report_path:$report_path}' > "$META_PATH"
+
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "report_path=$FULL_PATH" >> "$GITHUB_OUTPUT"
+        echo "meta_path=$META_PATH" >> "$GITHUB_OUTPUT"
 
     - id: generate_output
       if: steps.circuit_breaker.outputs.skip != 'true'
@@ -129,19 +139,22 @@ runs:
       env:
         GLOBAL_FOUND: ${{ steps.global_check.outputs.found }}
         GLOBAL_REF: ${{ steps.global_check.outputs.ref }}
+        META_PATH: ${{ steps.scan.outputs.meta_path }}
       run: |
         set -euo pipefail
 
-        if [ -f /tmp/scan_status ]; then
-          STATUS=$(cat /tmp/scan_status)
-        else
-          STATUS="SKIPPED"
-        fi
+        REPORT_DIR=".sentinel-reports"
+        RESULT_PATH="./$REPORT_DIR/result.json"
+        mkdir -p "$REPORT_DIR"
 
-        if [ -f /tmp/scan_count ]; then
-          COUNT=$(cat /tmp/scan_count)
-        else
-          COUNT="-"
+        STATUS="SKIPPED"
+        COUNT="-"
+        REPORT_PATH=""
+
+        if [ -n "${META_PATH:-}" ] && [ -f "$META_PATH" ]; then
+          STATUS=$(jq -r '.status // "SKIPPED"' "$META_PATH")
+          COUNT=$(jq -r '.count // "-"' "$META_PATH")
+          REPORT_PATH=$(jq -r '.report_path // ""' "$META_PATH")
         fi
 
         DETAIL=""
@@ -151,19 +164,18 @@ runs:
           DETAIL="A assinatura do código não mudou. Relatório existente em: \`$CLEAN_REF\`."
         fi
 
-        if command -v jq >/dev/null 2>&1; then
-          JSON=$(jq -c -n \
-            --arg status "$STATUS" \
-            --arg count "$COUNT" \
-            --arg global_found "$GLOBAL_FOUND" \
-            --arg global_ref "$GLOBAL_REF" \
-            --arg detail "$DETAIL" \
-            '{status:$status, count:$count, global_found:$global_found, global_ref:$global_ref, detail:$detail}')
-        else
-          JSON="{\"status\":\"$STATUS\",\"count\":\"$COUNT\",\"global_found\":\"$GLOBAL_FOUND\",\"global_ref\":\"$GLOBAL_REF\",\"detail\":\"$DETAIL\"}"
-        fi
+        jq -c -n \
+          --arg status "$STATUS" \
+          --arg count "$COUNT" \
+          --arg global_found "${GLOBAL_FOUND:-}" \
+          --arg global_ref "${GLOBAL_REF:-}" \
+          --arg detail "$DETAIL" \
+          --arg report_path "$REPORT_PATH" \
+          '{status:$status, count:$count, global_found:$global_found, global_ref:$global_ref, detail:$detail, report_path:$report_path}' > "$RESULT_PATH"
 
+        JSON=$(cat "$RESULT_PATH")
         echo "JSON_RESULT: $JSON"
         echo "json=$JSON" >> "$GITHUB_OUTPUT"
         echo "status=$STATUS" >> "$GITHUB_OUTPUT"
         echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "result_path=$RESULT_PATH" >> "$GITHUB_OUTPUT"
